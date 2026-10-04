@@ -213,6 +213,8 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
                 new String[]{"list", "get", "create", "update", "delete"}, "操作类型。"));
         addProperty(observation, "channel_id", described(stringSchema(), "通道 ID，get、update、delete 必填。"));
         addProperty(observation, "name", described(stringSchema(), "通道名称，create 必填。"));
+        addProperty(observation, "eventAction", described(stringSchema(),
+                "事件处理指令，create 必填，最多 8192 个字符。写明处理目标、判断条件及结果去向，使新会话也能独立执行；update 未传则保留原指令。事件产生时保存快照，投递和重试使用该快照。"));
         addProperty(observation, "script", described(stringSchema(), "JavaScript 脚本，通过 module.exports 导出返回字符串的函数，create 必填。"));
         addProperty(observation, "frequency", described(stringSchema(),
                 "观测频率，默认 30s，支持 s、min、h。除非用户明确要求，否则建议使用默认值，"

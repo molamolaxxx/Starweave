@@ -155,6 +155,7 @@ final class ObservationStore {
                     while (r.next()) {
                         JsonObject item = JsonParser.parseString(r.getString(1)).getAsJsonObject();
                         if (!full) {
+                            item.remove("eventAction");
                             for (String key : Arrays.asList("before", "after")) {
                                 String value = item.get(key).getAsString();
                                 item.addProperty(key + "Truncated", value.length() > 240);

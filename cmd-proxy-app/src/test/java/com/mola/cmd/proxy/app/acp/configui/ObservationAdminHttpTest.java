@@ -64,8 +64,12 @@ public class ObservationAdminHttpTest {
                                 "POST",
                                 "/api/observations/v1/channels",
                                 "{\"name\":\"Jira\",\"script\":\"module.exports=()=>"
-                                        + " 'result'\",\"ownerPath\":\"assistant\"}");
+                                        + " 'result'\",\"eventAction\":\"核验并汇总变更\",\"ownerPath\":\"assistant\"}");
                 assertEquals(200, created.status);
+                assertEquals("核验并汇总变更", JsonParser.parseString(created.body).getAsJsonObject()
+                        .get("eventAction").getAsString());
+                assertEquals(400, request(port, "POST", "/api/observations/v1/channels",
+                        "{\"name\":\"missing-action\",\"script\":\"module.exports=()=> 'x'\",\"ownerPath\":\"assistant\"}").status);
                 assertEquals("30s", JsonParser.parseString(created.body).getAsJsonObject()
                         .get("frequency").getAsString());
                 String id =
@@ -76,6 +80,13 @@ public class ObservationAdminHttpTest {
                 Response list = request(port, "GET", "/api/observations/v1/channels", null);
                 assertTrue(list.body.contains("Jira"));
                 assertFalse(list.body.contains("module.exports"));
+                assertFalse(list.body.contains("eventAction"));
+                assertEquals(400, request(port, "PUT", "/api/observations/v1/channels?channelId=" + id,
+                        "{\"eventAction\":\"\"}").status);
+                assertEquals(200, request(port, "PUT", "/api/observations/v1/channels?channelId=" + id,
+                        "{\"eventAction\":\"新的处理指令\"}").status);
+                assertTrue(request(port, "GET", "/api/observations/v1/channels?channelId=" + id, null)
+                        .body.contains("新的处理指令"));
                 Response tested =
                         request(
                                 port,

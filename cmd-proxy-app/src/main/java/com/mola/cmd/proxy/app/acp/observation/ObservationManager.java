@@ -257,6 +257,7 @@ public final class ObservationManager implements AutoCloseable {
                         event.addProperty("id", "evt_" + UUID.randomUUID());
                         event.addProperty("channelId", id);
                         event.addProperty("channelName", text(update, "name"));
+                        event.addProperty("eventAction", text(update, "eventAction"));
                         event.addProperty("ownerPath", text(update, "ownerPath"));
                         event.add("owner", update.get("owner").deepCopy());
                         event.addProperty("before", text(update, "baseline"));
@@ -426,6 +427,7 @@ public final class ObservationManager implements AutoCloseable {
         channel.addProperty("ownerPath", owner);
         channel.add("owner", ownerJson(target.owner));
         channel.addProperty("name", required(input, "name"));
+        channel.addProperty("eventAction", eventAction(input));
         String script = required(input, "script");
         ObservationScriptRunner.validate(script);
         channel.addProperty("script", script);
@@ -447,6 +449,7 @@ public final class ObservationManager implements AutoCloseable {
         if (input.has("ownerPath") && !text(channel, "ownerPath").equals(text(input, "ownerPath")))
             throw new IllegalArgumentException("所属智能体不可修改");
         if (input.has("name")) channel.addProperty("name", required(input, "name"));
+        if (input.has("eventAction")) channel.addProperty("eventAction", eventAction(input));
         if (input.has("script")) {
             String script = required(input, "script");
             ObservationScriptRunner.validate(script);
@@ -594,6 +597,7 @@ public final class ObservationManager implements AutoCloseable {
         copy.addProperty("running", executing.contains(text(copy, "id")));
         if (!detail) {
             copy.remove("script");
+            copy.remove("eventAction");
             copy.remove("baseline");
         }
         return copy;
@@ -665,11 +669,21 @@ public final class ObservationManager implements AutoCloseable {
         return value.length() > limit ? value.substring(0, limit) + "\n[已截断，请查询事件明细]" : value;
     }
 
+    private static String eventAction(JsonObject input) {
+        JsonElement value = input.get("eventAction");
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()
+                || value.getAsString().trim().isEmpty())
+            throw new IllegalArgumentException("请填写事件处理指令");
+        String action = value.getAsString().trim();
+        if (action.length() > 8192) throw new IllegalArgumentException("事件处理指令不能超过 8192 个字符");
+        return action;
+    }
+
     private static String prompt(List<JsonObject> events) {
         StringBuilder s =
                 new StringBuilder(
                         "<observation-events>\n"
-                                + "以下是你的观测通道发现的变化事件，请结合发现时间判断其当前有效性，必要时核验最新状态，再处理这些变化。\n");
+                                + "以下是你的观测通道发现的变化事件。请逐个按照各自的事件处理指令处理，结合发现时间判断其当前有效性，必要时核验最新状态。\n");
         for (JsonObject event : events)
             s.append("\n通道：")
                     .append(text(event, "channelName"))
@@ -679,6 +693,10 @@ public final class ObservationManager implements AutoCloseable {
                     .append(text(event, "id"))
                     .append("\n发现时间：")
                     .append(Instant.ofEpochMilli(number(event, "createdAt")))
+                    .append("\n事件处理指令：\n")
+                    .append(text(event, "eventAction").trim().isEmpty()
+                            ? "该事件未配置处理指令，请向用户确认处理方式，不要凭通道名称或观测结果猜测任务。"
+                            : text(event, "eventAction"))
                     .append("\n变化前的观测结果：\n")
                     .append(preview(text(event, "before"), 2000))
                     .append("\n变化后的观测结果：\n")
@@ -696,6 +714,8 @@ public final class ObservationManager implements AutoCloseable {
             "<observation>\n"
                     + "你已开启观测能力。观测通道按配置频率执行 Node.js 脚本，首次成功结果作为基线，后续结果变化时生成事件并通知你。\n"
                     + "创建、查询、修改或删除自己的观测通道，调用 manage_observation_channels。\n"
+                    + "创建通道必须填写 eventAction（事件处理指令），写明处理目标、判断条件及结果去向，使新会话无需旧聊天记录也能独立处理。修改时未提供此字段则保留原指令。\n"
+                    + "事件保存产生时的处理指令快照，通知和重试均使用该快照；缺少指令的旧事件应向用户确认处理方式。\n"
                     + "测试脚本调用 test_observation_script。查询通道事件或事件完整明细，调用 query_observation_events。\n"
                     + "观测脚本通过 module.exports 导出一个函数，支持异步执行，必须返回字符串；抛出异常表示观测失败。\n"
                     + "</observation>\n";

@@ -41,6 +41,18 @@ public class CmdProxyMcpHttpHandlerTest {
     }
 
     @Test
+    public void exposesObservationActionAsIndependentChannelField() {
+        JsonObject tool = findTool(CmdProxyMcpHttpHandler.tools(), "manage_observation_channels");
+        JsonObject properties = tool.getAsJsonObject("inputSchema").getAsJsonObject("properties");
+        assertEquals("string", properties.getAsJsonObject("eventAction").get("type").getAsString());
+        String description = properties.getAsJsonObject("eventAction").get("description").getAsString();
+        assertTrue(description.contains("create 必填"));
+        assertTrue(description.contains("新会话"));
+        assertTrue(description.contains("快照"));
+        assertTrue(properties.has("action"));
+    }
+
+    @Test
     public void exposesAcpHarnessServerIdentity() throws Exception {
         JsonObject response = post("{\"jsonrpc\":\"2.0\",\"id\":0,"
                         + "\"method\":\"initialize\","
