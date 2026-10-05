@@ -17,8 +17,8 @@ import java.util.function.Consumer;
 
 /**
  * Request/reply bridge from the local Starweave REST facade to the trusted
- * MolaChat Fast Team coordinator. Requests use the authenticated participant
- * transport callback; replies return to the same instance-scoped transport.
+ * registry team coordinator. The production constructor uses the local registry
+ * facade; the callback adapter remains available for transport contract tests.
  */
 public final class StarweaveTeamGateway {
     private static final Logger logger =
@@ -43,11 +43,13 @@ public final class StarweaveTeamGateway {
     private final Map<String, CompletableFuture<JSONObject>> inFlightQueries =
             new ConcurrentHashMap<>();
     private volatile boolean available;
+    private boolean registryCoordinator;
 
     public StarweaveTeamGateway(String instanceId, String transportGroup) {
         this(instanceId, transportGroup, QUERY_TIMEOUT_MILLIS, MUTATION_TIMEOUT_MILLIS,
                 (command, group, response) -> CmdReceiver.INSTANCE.callback(
                         command, group, response));
+        registryCoordinator = true;
     }
 
     StarweaveTeamGateway(String instanceId, String transportGroup,
@@ -128,6 +130,10 @@ public final class StarweaveTeamGateway {
     }
 
     private JSONObject request(String operation, JSONObject payload, long timeoutMillis) {
+        if (registryCoordinator) {
+            return com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.request(
+                    ownerId, operation, payload);
+        }
         if (!available) {
             throw new IllegalStateException("Starweave Team coordinator is unavailable");
         }

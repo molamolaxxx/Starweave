@@ -103,7 +103,8 @@ public final class StarweaveTeamApiBridge {
         if (localTeams != null) {
             for (int i = 0; i < localTeams.size(); i++) {
                 JSONObject team = localTeams.getJSONObject(i);
-                if (team.getBooleanValue("mixedPlacement")) {
+                if (team.getBooleanValue("mixedPlacement") ||
+                        com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.isAssigned(team.getString("teamId"))) {
                     // A persisted local fragment is not an ordinary local Team. Keep all
                     // mutations fail-closed through the coordinator while it reconnects.
                     team.put("coordinated", true);
@@ -160,7 +161,9 @@ public final class StarweaveTeamApiBridge {
                         source.put("coordinated", true);
                         String identity = sourceIdentity(source);
                         int existingIndex = indexOfSource(values, identity);
-                        if (existingIndex >= 0) values.set(existingIndex, source);
+                        // Keep ordinary home sources on the direct local TeamManager path.
+                        // Only additional shared/remote sources require coordination.
+                        if (existingIndex >= 0) continue;
                         else if (identities.add(identity)) values.add(source);
                     }
                 }
@@ -170,7 +173,7 @@ public final class StarweaveTeamApiBridge {
             }
         }
         boolean coordinatorDelayed = false;
-        if (current.lastCoordinatedSources != null) {
+        if (coordinatorFailed && current.lastCoordinatedSources != null) {
             mergeStaleSources(values, current.lastCoordinatedSources);
             coordinatorDelayed = true;
         }
@@ -245,7 +248,7 @@ public final class StarweaveTeamApiBridge {
 
     public static JSONObject delete(JSONObject request) {
         Runtime current = requireRuntime();
-        if (request != null && request.getBooleanValue("coordinated")) {
+        if (isCoordinated(request)) {
             if (current.gateway == null) {
                 throw new IllegalStateException("Starweave Team coordinator is unavailable");
             }
@@ -263,7 +266,7 @@ public final class StarweaveTeamApiBridge {
     public static JSONObject update(JSONObject request) {
         Runtime current = requireRuntime();
         if (request == null) throw new IllegalArgumentException("request body is required");
-        if (request.getBooleanValue("coordinated")) {
+        if (isCoordinated(request)) {
             if (current.gateway == null) {
                 throw new IllegalStateException("Starweave Team coordinator is unavailable");
             }
@@ -330,6 +333,7 @@ public final class StarweaveTeamApiBridge {
 
     private static JSONObject executeMember(Runtime current, JSONObject request) {
         if (request == null) throw new IllegalArgumentException("request body is required");
+        boolean coordinated = isCoordinated(request);
         JSONObject commandValue = new JSONObject(true);
         commandValue.putAll(request);
         commandValue.put("schemaVersion", TeamDefinition.SCHEMA_VERSION);
@@ -340,12 +344,12 @@ public final class StarweaveTeamApiBridge {
             String memberId = required(request.getString("teamMemberId"), "teamMemberId");
             java.util.Optional<com.mola.cmd.proxy.app.acp.team.runtime.TeamRuntime> local =
                     current.manager.getRuntime(teamId);
-            if (!request.getBooleanValue("coordinated") || local.isPresent()) {
+            if (!coordinated || local.isPresent()) {
                 local.orElseThrow(
                         () -> new IllegalArgumentException("Team not found"))
                         .getDefinition();
             }
-            String sessionId = request.getBooleanValue("coordinated")
+            String sessionId = coordinated
                     ? required(request.getString("sessionId"), "sessionId")
                     : currentSessionId(current, teamId, memberId,
                     request.getString("sessionId"));
@@ -368,7 +372,7 @@ public final class StarweaveTeamApiBridge {
             }
             commandValue.put("files", files);
         }
-        if (request.getBooleanValue("coordinated")) {
+        if (coordinated) {
             if (current.gateway == null) {
                 throw new IllegalStateException("Starweave Team coordinator is unavailable");
             }
@@ -411,7 +415,7 @@ public final class StarweaveTeamApiBridge {
         if (request == null) throw new IllegalArgumentException("request body is required");
         String teamId = required(request.getString("teamId"), "teamId");
         String memberId = required(request.getString("teamMemberId"), "teamMemberId");
-        String sessionId = request.getBooleanValue("coordinated")
+        String sessionId = isCoordinated(request)
                 ? required(request.getString("sessionId"), "sessionId")
                 : currentSessionId(current, teamId, memberId,
                 request.getString("sessionId"));
@@ -433,7 +437,7 @@ public final class StarweaveTeamApiBridge {
     public static JSONObject previewTextFile(JSONObject request) {
         Runtime current = requireRuntime();
         if (request == null) throw new IllegalArgumentException("request is required");
-        if (request.getBooleanValue("coordinated")) {
+        if (isCoordinated(request)) {
             JSONObject rejected = new JSONObject(true);
             rejected.put("accepted", false);
             rejected.put("code", "REMOTE_FILE_PREVIEW_UNSUPPORTED");
@@ -466,6 +470,11 @@ public final class StarweaveTeamApiBridge {
         return GSON.fromJson(value.toJSONString(), TeamMemberCommand.class);
     }
 
+    private static boolean isCoordinated(JSONObject request) {
+        return request != null && (request.getBooleanValue("coordinated")
+                || com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.isAssigned(request.getString("teamId")));
+    }
+
     /** Returns true when the event belongs to Starweave and must not reach MolaChat. */
     public static boolean publishIfOwned(TeamEventEnvelope event) {
         Runtime current = runtime;
@@ -485,7 +494,7 @@ public final class StarweaveTeamApiBridge {
         return true;
     }
 
-    /** Mixed Starweave fragments must also reach the MolaChat global coordinator. */
+    /** Mixed fragments require the registry coordinator's global projection. */
     public static boolean requiresCoordinator(TeamEventEnvelope event) {
         Runtime current = runtime;
         if (current == null || event == null) return false;
@@ -531,7 +540,8 @@ public final class StarweaveTeamApiBridge {
                 .getRuntime(teamId).orElseThrow(() ->
                         new IllegalArgumentException("coordinated Team not found"));
         TeamDefinition definition = team.getDefinition();
-        if (!definition.isMixedPlacement()
+        if ((!definition.isMixedPlacement()
+                && !com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.isAssigned(teamId))
                 || !current.ownerId.equals(definition.getOwnerChatterId())) {
             throw new IllegalArgumentException("event does not belong to a mixed Starweave Team");
         }
@@ -547,6 +557,26 @@ public final class StarweaveTeamApiBridge {
         result.put("accepted", "true");
         result.put("code", "OK");
         return result;
+    }
+
+    /** Authenticated registry delivery also accepts the terminal event after local cleanup. */
+    public static void projectCoordinatorEvent(String ownerId, JSONObject event) {
+        Runtime current = requireRuntime();
+        if (!current.ownerId.equals(ownerId)) throw new IllegalArgumentException("coordinator event owner mismatch");
+        String teamId = required(event.getString("teamId"), "event.teamId");
+        if (!com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.authorizesProjection(ownerId, event))
+            throw new IllegalArgumentException("Team has no registry coordinator binding");
+        java.util.Optional<com.mola.cmd.proxy.app.acp.team.runtime.TeamRuntime> local = current.manager.getRuntime(teamId);
+        // Durable late events remain authorized by the binding after runtime cleanup.
+        if (local.isPresent()) {
+            TeamDefinition definition = local.get().getDefinition();
+            if (!ownerId.equals(definition.getOwnerChatterId())) throw new IllegalArgumentException("Team owner mismatch");
+            String memberId = event.getString("teamMemberId");
+            if (memberId != null && !memberId.trim().isEmpty() && definition.getRoster().stream()
+                    .noneMatch(contact -> memberId.equals(contact.getTargetTeamMemberId())))
+                throw new IllegalArgumentException("event member not in roster");
+        }
+        appendEvent(event);
     }
 
     public static JSONArray events(long afterSeq, String teamId, String teamMemberId) {

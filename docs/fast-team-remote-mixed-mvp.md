@@ -1,7 +1,8 @@
 # Fast Team 本机与 Remote ACP 混选 MVP
 
-> 状态：2026-08-08 需求纠正后的 cmd-proxy 唯一 MVP 基线  
-> 范围：当前实施基线；2026-08-08 已获授权开始双方并行开发  
+> 历史方案：2026-08-08 混合队伍 MVP。2026-10-05 起，全局协调已迁入 Starweave 注册中心，
+> MolaChat 不再持有混合队伍权威；当前实现与验证范围见[注册中心混合队伍改造](registry-mixed-team-refactor.md)。
+> 下文保留原方案背景，不作为当前协调职责的说明。
 > 兼容：现有纯本机 Fast Team 保持 V1 原路径不变
 
 > cmd-proxy 实施状态：已完成首轮实现与回归。已落地 standing allowlist、独立 remote source

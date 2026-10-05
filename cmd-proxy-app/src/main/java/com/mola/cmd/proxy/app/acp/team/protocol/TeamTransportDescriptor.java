@@ -46,6 +46,7 @@ public final class TeamTransportDescriptor {
         this.commands = businessCommandsReady
                 ? Collections.unmodifiableList(Arrays.asList(
                         TeamTransportProtocol.DESCRIBE_COMMAND,
+                        com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.RPC_COMMAND,
                         TeamTransportProtocol.CREATE_COMMAND,
                         TeamTransportProtocol.UPDATE_MEMBERS_COMMAND,
                         TeamTransportProtocol.LIST_COMMAND,

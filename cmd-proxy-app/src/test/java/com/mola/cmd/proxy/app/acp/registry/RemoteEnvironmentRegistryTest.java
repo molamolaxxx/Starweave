@@ -48,6 +48,17 @@ public class RemoteEnvironmentRegistryTest {
         assertFalse(registry.tunnelAllowed(entry.id, entry.lease, entry.port, null));
         assertFalse(registry.list().get(0).online);
     }
+    @Test public void teamCallerIdentityRequiresOnlineCurrentLeaseAndExpires() throws Exception {
+        AtomicLong clock = new AtomicLong(100_000);
+        RemoteEnvironmentRegistry registry = new RemoteEnvironmentRegistry(new RegistryConfigStore(temporary.newFolder().toPath()), clock::get);
+        RemoteEnvironmentRegistry.Entry entry = registry.register("node", "actual-source", "电脑");
+        try { registry.authorizeParticipant(entry.id, entry.lease); fail(); } catch (IllegalArgumentException expected) { }
+        registry.verified(entry.id, entry.lease, true);
+        assertEquals("actual-source", registry.authorizeParticipant(entry.id, entry.lease));
+        try { registry.authorizeParticipant(entry.id, "forged"); fail(); } catch (IllegalArgumentException expected) { }
+        clock.addAndGet(RemoteEnvironmentRegistry.LEASE_MILLIS);
+        try { registry.authorizeParticipant(entry.id, entry.lease); fail(); } catch (IllegalArgumentException expected) { }
+    }
     @Test public void oldConnectionCloseAndProbeCannotInvalidateReplacement() throws Exception {
         RemoteEnvironmentRegistry registry = new RemoteEnvironmentRegistry(new RegistryConfigStore(temporary.newFolder().toPath()));
         RemoteEnvironmentRegistry.Entry entry = registry.register("node", "source", "电脑");

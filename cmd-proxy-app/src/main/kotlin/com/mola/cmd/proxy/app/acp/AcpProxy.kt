@@ -536,6 +536,14 @@ object AcpProxy {
                 event: com.mola.cmd.proxy.app.acp.team.event.TeamEventEnvelope
             ): Boolean {
                 GatewayEventBridge.publishTeam(event)
+                if (com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.isAssigned(event.teamId)) {
+                    return try {
+                        com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.capture(event)
+                    } catch (e: RuntimeException) {
+                        log.warn("团队事件持久化投递未接收, teamId={}", event.teamId)
+                        false
+                    }
+                }
                 val publishedLocally = StarweaveTeamApiBridge.publishIfOwned(event)
                 return if (publishedLocally) {
                     if (StarweaveTeamApiBridge.requiresCoordinator(event)) {
@@ -651,6 +659,8 @@ object AcpProxy {
         TeamSharingStatusRegistry.setSupplier { teamSharingStatuses() }
         // 恢复流程会异步启动成员，initializer 必须在恢复前就能解析到权威 manager。
         teamManager = manager
+        com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.installParticipant(
+            manager, java.util.function.Supplier { teamTransportDescriptor })
         var recovered = false
         try {
             val recoveredCount = manager.recoverPersistedDefinitions(
@@ -670,6 +680,14 @@ object AcpProxy {
                     remoteTeamMemberSourceDescriptors())
             teamCommandHandler =
                 TeamCommandHandler(manager, teamTransportDescriptor.transportGroup)
+            CmdReceiver.register(
+                com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.RPC_COMMAND,
+                teamTransportDescriptor.transportGroup,
+                "Proxy authenticated MolaChat Team requests to the registry coordinator"
+            ) { param ->
+                com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.handleRpc(
+                    param.cmdId, param.cmdArgs)
+            }
         }
 
         CmdReceiver.register(
@@ -2077,6 +2095,9 @@ object AcpProxy {
         val closingTeamManager = teamManager
         closingTeamManager?.closeForShutdown()
         closingTeamManager?.let { StarweaveTeamApiBridge.clear(it) }
+        closingTeamManager?.let {
+            com.mola.cmd.proxy.app.acp.team.coordinator.TeamCoordinationBridge.clearParticipant(it)
+        }
         teamManager = null
         teamCommandHandler = null
         TeamSharingStatusRegistry.clear()

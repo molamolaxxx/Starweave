@@ -119,6 +119,19 @@ public final class RemoteEnvironmentRegistry {
                 || clock.getAsLong() - entry.lastHeartbeat >= LEASE_MILLIS) throw new IllegalArgumentException("注册连接已失效，请重新注册");
         return entry;
     }
+    /** Return verified connection identity, never a caller-supplied instance ID. */
+    public synchronized String authorizeParticipant(String id, String lease) {
+        Entry entry = authorized(id, lease);
+        if (!entry.online) throw new IllegalArgumentException("注册环境尚未在线");
+        return entry.sourceInstanceId;
+    }
+
+    public synchronized List<Entry> onlineEntries() {
+        candidates();
+        List<Entry> result = new ArrayList<>();
+        for (Entry entry : entries.values()) if (entry.online) result.add(copy(entry));
+        return result;
+    }
     private int allocatePort() throws IOException {
         Set<Integer> used = new HashSet<>(); for (Entry entry : entries.values()) used.add(entry.port);
         for (int port = 20000; port <= 29999; port++) {

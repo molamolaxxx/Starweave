@@ -50,6 +50,22 @@ public final class RegistryManager implements AutoCloseable {
     }
     public List<InstanceRegistry.InstanceInfo> environments() { return environments.list(); }
     public int resolve(String instanceId) { return environments.resolve(instanceId); }
+    public boolean isCenterEnabled() { return config.serverEnabled; }
+    public String localInstanceId() { return localInstanceId; }
+    public Path coordinationDirectory() { return store.directory().resolveSibling("team-coordination"); }
+    public List<RemoteEnvironmentRegistry.Entry> teamPeers() { return environments.onlineEntries(); }
+    public String authorizeTeamCaller(String environmentId, String lease) {
+        if (!config.serverEnabled) throw new IllegalArgumentException("注册中心未启用");
+        return environments.authorizeParticipant(environmentId, lease);
+    }
+    public boolean acceptsCenterLease(String lease) {
+        JSONObject active = connection;
+        return active != null && RemoteEnvironmentRegistry.equal(active.getString("lease"), lease);
+    }
+    public JSONObject teamCenterConnection() {
+        JSONObject active = connection;
+        return active == null ? null : JSON.parseObject(active.toJSONString());
+    }
     public synchronized JSONObject settings() {
         JSONObject result = (JSONObject) JSON.toJSON(config);
         result.put("displayName", config.displayName.isEmpty() ? localInstanceId : config.displayName);

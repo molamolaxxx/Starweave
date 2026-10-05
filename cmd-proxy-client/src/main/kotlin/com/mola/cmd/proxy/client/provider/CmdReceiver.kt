@@ -145,6 +145,8 @@ object CmdReceiver {
         register(cmdName, cmdGroupList, "", receiver)
     }
 
+    fun hasCallbackConsumer(cmdGroup: String): Boolean = callbackConsumerMapByGroup.containsKey(cmdGroup)
+
     fun callback(cmdName: String, cmdGroup: String, response: CmdResponseContent) {
         val cmdProxyCallbackService = callbackConsumerMapByGroup[cmdGroup]
         if (cmdProxyCallbackService == null) {

@@ -365,7 +365,7 @@ public class StarweaveTeamApiBridgeTest {
     }
 
     @Test
-    public void coordinatorReplacesLocalSourceAndReceivesStableMixedSelection()
+    public void coordinatorPreservesLocalSourceAndReceivesStableMixedSelection()
             throws Exception {
         String instanceId = "instance-home";
         String ownerId = StarweaveIdentity.ownerId(instanceId);
@@ -424,9 +424,10 @@ public class StarweaveTeamApiBridgeTest {
             JSONObject discovery = StarweaveTeamApiBridge.sources();
             JSONArray sources = discovery.getJSONArray("sources");
             assertEquals(2, sources.size());
-            assertEquals("team-acp-" + instanceId,
+            assertEquals("starweave-team:" + instanceId,
                     sources.getJSONObject(0).getString("transportGroup"));
-            assertTrue(sources.getJSONObject(0).getBooleanValue("coordinated"));
+            assertFalse(sources.getJSONObject(0).getBooleanValue("coordinated"));
+            assertTrue(sources.getJSONObject(1).getBooleanValue("coordinated"));
             JSONArray localSources = discovery.getJSONArray("localSources");
             assertEquals(1, localSources.size());
             assertFalse(localSources.getJSONObject(0).getBooleanValue("coordinated"));

@@ -95,6 +95,7 @@ public class ConfigUiServer {
             new StarweaveRequestDeduplicator();
     private HttpServer server;
     private RegistryManager registryManager;
+    private com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator teamCoordinator;
     private final EnvironmentHttpProxy environmentProxy = new EnvironmentHttpProxy();
     private ExecutorService executor;
     private ExecutorService starweaveStreamExecutor;
@@ -249,6 +250,12 @@ public class ConfigUiServer {
         // 环境列表（不代理，始终由本进程扫描主机级注册表）
         server.createContext("/api/instances", this::handleInstances);
         registryManager = createRegistryManager(server.getAddress().getPort());
+        teamCoordinator = new com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator(
+                registryManager, registryManager.coordinationDirectory());
+        server.createContext(com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator.CENTER_PATH,
+                teamCoordinator::handleCenter);
+        server.createContext(com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator.PARTICIPANT_PATH,
+                teamCoordinator::handleParticipant);
         // 注册控制属于接收进程；系统设置操作跟随当前选中的环境。
         server.createContext("/api/registry/", registryManager::handleControl);
         server.createContext("/api/registry/access", proxied(registryManager::handleAccess));
@@ -369,6 +376,7 @@ public class ConfigUiServer {
 
         server.start();
         registryManager.start();
+        teamCoordinator.start();
         updateCheckExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "jar-update-checker");
             thread.setDaemon(true);
@@ -443,6 +451,7 @@ public class ConfigUiServer {
     }
 
     public void stop() {
+        if (teamCoordinator != null) teamCoordinator.close();
         if (registryManager != null) registryManager.close();
         environmentProxy.close();
         if (updateCheckExecutor != null) {

@@ -136,7 +136,8 @@ public class TeamTransportProtocolTest {
                 TeamTransportDescriptor.readyForBusiness("instance-a");
 
         assertTrue(descriptor.isBusinessCommandsReady());
-        assertEquals(18, descriptor.getCommands().size());
+        assertEquals(19, descriptor.getCommands().size());
+        assertTrue(descriptor.getCommands().contains("acpTeamCoordinator"));
         assertTrue(descriptor.getCommands().contains("acpTeamCreate"));
         assertTrue(descriptor.getCommands().contains("acpTeamUpdateMembers"));
         assertTrue(descriptor.getCommands().contains("acpTeamList"));
