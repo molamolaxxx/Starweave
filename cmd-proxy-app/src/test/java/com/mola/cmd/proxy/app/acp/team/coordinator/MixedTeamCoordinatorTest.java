@@ -110,6 +110,21 @@ public class MixedTeamCoordinatorTest {
         coordinator.execute("user", "a", "create", request());
         expect("UNAUTHORIZED", () -> coordinator.acceptEvent("c", event("e1", "MESSAGE_COMPLETE")));
     }
+    @Test public void realtimeRoutingChecksPlacementAndCannotInjectControlOrRollBackSession() {
+        coordinator.execute("user", "a", "create", request());
+        JSONObject text = event("text", "MESSAGE_CHUNK"); text.put("teamMemberId", "m2");
+        JSONObject target = coordinator.realtimeDestination("b", text);
+        assertEquals("a", target.getString("homeInstanceId")); assertEquals("user", target.getString("ownerChatterId"));
+        expect("UNAUTHORIZED", () -> coordinator.realtimeDestination("a", text));
+        expect("UNAUTHORIZED", () -> coordinator.realtimeDestination("c", text));
+        JSONObject control = event("control", "TEAM_DELETED"); control.put("teamMemberId", "m2");
+        expect("UNAUTHORIZED", () -> coordinator.realtimeDestination("b", control));
+        JSONObject session = event("session", "MEMBER_SESSION_CHANGED"); session.put("teamMemberId", "m2"); session.put("teamVersion", 8);
+        assertEquals("a", coordinator.realtimeDestination("b", session).getString("homeInstanceId"));
+        session.put("teamVersion", 7);
+        assertTrue(coordinator.realtimeDestination("b", session).getBooleanValue("ignored"));
+        assertTrue(store.list("inbox").isEmpty()); assertTrue(store.list("receipts").isEmpty());
+    }
 
     @Test public void failedProjectionRemainsDurableUntilHomeRecovers() {
         coordinator.execute("user", "a", "create", request());

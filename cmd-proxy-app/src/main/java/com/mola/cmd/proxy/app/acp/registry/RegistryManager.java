@@ -54,6 +54,22 @@ public final class RegistryManager implements AutoCloseable {
     public String localInstanceId() { return localInstanceId; }
     public Path coordinationDirectory() { return store.directory().resolveSibling("team-coordination"); }
     public List<RemoteEnvironmentRegistry.Entry> teamPeers() { return environments.onlineEntries(); }
+    public void teamRealtimeReceiver(java.util.function.BiPredicate<String, JSONObject> receiver) {
+        tunnel.realtimeReceiver(receiver == null ? null : (environment, lease, event) -> {
+            if (environment == null) {
+                if (!acceptsCenterLease(lease)) throw new IllegalArgumentException("协调中心租约失效");
+                return receiver.test(null, event);
+            }
+            return receiver.test(authorizeTeamCaller(environment, lease), event);
+        });
+    }
+    public boolean sendTeamRealtime(String instance, JSONObject event) {
+        if (instance == null) return tunnel.sendRealtime(null, event);
+        for (RemoteEnvironmentRegistry.Entry peer : teamPeers()) {
+            if (instance.equals(peer.sourceInstanceId)) return tunnel.sendRealtime(peer.id, event);
+        }
+        return false;
+    }
     public String authorizeTeamCaller(String environmentId, String lease) {
         if (!config.serverEnabled) throw new IllegalArgumentException("注册中心未启用");
         return environments.authorizeParticipant(environmentId, lease);
@@ -74,6 +90,7 @@ public final class RegistryManager implements AutoCloseable {
         result.remove("nodeId"); result.put("serverStatus", serverStatus); result.put("clientStatus", clientStatus);
         result.put("serverError", serverError); result.put("clientError", clientError);
         result.put("tunnelProvider", "netty");
+        result.put("teamRealtimeConnected", tunnel.realtimeClientAlive());
         return result;
     }
     public synchronized JSONObject configure(JSONObject input) throws IOException {

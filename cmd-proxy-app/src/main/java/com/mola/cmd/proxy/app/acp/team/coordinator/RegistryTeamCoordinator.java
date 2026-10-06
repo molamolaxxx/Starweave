@@ -33,12 +33,17 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
     });
     private volatile boolean closed;
     private final Map<String, Object> participantLocks = new ConcurrentHashMap<>();
+    private final Map<String, JSONObject> bindings = new ConcurrentHashMap<>();
+    private final ThreadPoolExecutor realtimeClientProjector = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(64), r -> { Thread t = new Thread(r, "registry-team-client-realtime"); t.setDaemon(true); return t; });
+    private final java.util.concurrent.atomic.AtomicInteger clientProjectionBytes = new java.util.concurrent.atomic.AtomicInteger();
     public RegistryTeamCoordinator(RegistryManager registry, Path directory) {
         this.registry = registry; this.store = new CoordinationStore(directory);
         this.coordinator = new MixedTeamCoordinator(store, this);
     }
     public void start() {
         TeamCoordinationBridge.installService(this);
+        registry.teamRealtimeReceiver(this::receiveRealtime);
         worker.scheduleWithFixedDelay(this::tickSafely, 200, 500, TimeUnit.MILLISECONDS);
         clientProjector.scheduleWithFixedDelay(this::projectClientsSafely, 200, 500, TimeUnit.MILLISECONDS);
     }
@@ -94,7 +99,15 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
     }
     public boolean capture(JSONObject event) {
         String teamId = event.getString("teamId");
-        if (teamId == null || store.find("bindings", teamId) == null) return false;
+        if (teamId == null || binding(teamId) == null) return false;
+        if (isRealtimeEvent(event)) {
+            boolean accepted = registry.isCenterEnabled() ? routeRealtime(registry.localInstanceId(), event)
+                    : registry.sendTeamRealtime(null, MixedTeamCoordinator.object("operation", "event", "payload", event));
+            if (!accepted) org.slf4j.LoggerFactory.getLogger(getClass()).warn("团队实时事件未接收，连接离线或队列已满: teamId={}, eventId={}", teamId, event.getString("eventId"));
+            // Session rotation must reach the UI before new-session text, and still update
+            // the durable coordinator record even if its immediate projection was admitted.
+            if (!Arrays.asList("MEMBER_SESSION_CHANGED", "MESSAGE_COMPLETE", "MESSAGE_ERROR").contains(event.getString("type"))) return accepted;
+        }
         try {
             // Persist before returning admission success, without performing network I/O.
             store.enqueue("outbox", event.getString("eventId"), event, 10000);
@@ -104,9 +117,12 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
             throw failure;
         }
     }
-    public boolean isAssigned(String teamId) { return teamId != null && store.find("bindings", teamId) != null; }
+    public boolean isAssigned(String teamId) { return teamId != null && binding(teamId) != null; }
+    private JSONObject binding(String teamId) {
+        return bindings.computeIfAbsent(teamId, id -> store.find("bindings", id));
+    }
     public boolean authorizesProjection(String owner, JSONObject event) {
-        JSONObject binding = store.find("bindings", event.getString("teamId"));
+        JSONObject binding = binding(event.getString("teamId"));
         if (binding == null || !Objects.equals(owner, binding.getString("ownerChatterId"))
                 || !registry.localInstanceId().equals(binding.getString("homeInstanceId"))) return false;
         String member = event.getString("teamMemberId");
@@ -129,6 +145,7 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
         if (old != null && old.getBooleanValue("creationBlocked"))
             throw new CoordinationException("TEAM_DELETING", "队伍删除已接受，不能重新创建");
         store.save("bindings", teamId, binding);
+        bindings.put(teamId, MixedTeamCoordinator.copy(binding));
     }
     @Override public Map<String, JSONObject> describeParticipants() {
         Map<String, JSONObject> result = new LinkedHashMap<>();
@@ -192,6 +209,64 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
             JSONObject pending = MixedTeamCoordinator.copy(event); pending.put("projectionOwner", owner);
             store.enqueue("projections", event.getString("eventId"), pending, 10000);
         }
+    }
+    static boolean isRealtimeEvent(JSONObject event) {
+        return event != null && Arrays.asList("MESSAGE_UPDATED", "USER_MESSAGE_ACCEPTED", "MESSAGE_CHUNK",
+                "MESSAGE_COMPLETE", "MESSAGE_ERROR", "TOOL_CALL", "TALK_TO_SEND", "TALK_TO_RECEIVE",
+                "TALK_TO_QUEUED", "TALK_TO_REJECTED", "SCHEDULE_EVENT", "SUB_AGENT_EVENT", "COMPACTION_EVENT",
+                "TASK_EVENT", "LIFECYCLE_EVENT", "MEMBER_SESSION_CHANGED").contains(event.getString("type"));
+    }
+    private boolean receiveRealtime(String source, JSONObject message) {
+        try { return dispatchRealtime(source, message); }
+        catch (CoordinationException rejected) {
+            if (!Arrays.asList("UNAUTHORIZED", "NOT_FOUND", "TEAM_DELETED").contains(rejected.getCode())) throw rejected;
+            // A retired team's pending frame must not block later frames for other teams.
+            // Acknowledge permanent rejection without projecting any untrusted content.
+            org.slf4j.LoggerFactory.getLogger(getClass()).warn("团队实时事件已拒绝: source={}, code={}", source, rejected.getCode());
+            return true;
+        }
+    }
+    private boolean dispatchRealtime(String source, JSONObject message) {
+        if (closed || message == null) return false;
+        JSONObject event = message.getJSONObject("payload");
+        if (!isRealtimeEvent(event)) throw new CoordinationException("UNAUTHORIZED", "实时通道不能投递控制事件");
+        if (source != null && "event".equals(message.getString("operation"))) return routeRealtime(source, event);
+        if (source == null && "project".equals(message.getString("operation"))) {
+            String owner = message.getString("ownerChatterId");
+            if (!authorizesProjection(owner, event)) throw new CoordinationException("UNAUTHORIZED", "实时事件不属于当前队伍");
+            return projectRealtime(owner, event);
+        }
+        throw new CoordinationException("UNAUTHORIZED", "实时事件方向无效");
+    }
+    private boolean routeRealtime(String source, JSONObject event) {
+        JSONObject destination = coordinator.realtimeDestination(source, event);
+        if (destination.getBooleanValue("ignored")) return true;
+        String home = destination.getString("homeInstanceId"), owner = destination.getString("ownerChatterId");
+        if (registry.localInstanceId().equals(home)) {
+            if (!authorizesProjection(owner, event)) throw new CoordinationException("UNAUTHORIZED", "实时事件不属于当前队伍");
+            return projectRealtime(owner, event);
+        }
+        JSONObject frame = MixedTeamCoordinator.object("operation", "project", "payload", event);
+        frame.put("ownerChatterId", owner);
+        return registry.sendTeamRealtime(home, frame);
+    }
+    private boolean projectRealtime(String owner, JSONObject event) {
+        if (StarweaveIdentity.ownerId(registry.localInstanceId()).equals(owner)) {
+            TeamCoordinationBridge.project(registry.localInstanceId(), owner, event); return true;
+        }
+        // Optional MolaChat callbacks cannot block a participant's real-time TLS channel.
+        // An offline client reconstructs display from authoritative session history on reconnect.
+        if (!com.mola.cmd.proxy.client.provider.CmdReceiver.INSTANCE.hasCallbackConsumer("team-acp-" + registry.localInstanceId())) return true;
+        int bytes = event.toJSONString().getBytes(StandardCharsets.UTF_8).length;
+        if (clientProjectionBytes.addAndGet(bytes) > 32 * 1024 * 1024) { clientProjectionBytes.addAndGet(-bytes); return false; }
+        try {
+            realtimeClientProjector.execute(() -> {
+                try { TeamCoordinationBridge.project(registry.localInstanceId(), owner, event); }
+                catch (RuntimeException unavailable) { org.slf4j.LoggerFactory.getLogger(getClass()).debug("实时客户端投影已断开: {}", unavailable.getMessage()); }
+                finally { clientProjectionBytes.addAndGet(-bytes); }
+            });
+            return true;
+        } catch (RejectedExecutionException full) { clientProjectionBytes.addAndGet(-bytes); return false; }
     }
     private void projectClientsSafely() {
         if (closed) return;
@@ -289,6 +364,8 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
     @FunctionalInterface private interface Operation { JSONObject run() throws IOException; }
     @Override public void close() {
         closed = true; TeamCoordinationBridge.clearService(this); worker.shutdownNow(); clientProjector.shutdownNow();
+        registry.teamRealtimeReceiver(null);
+        realtimeClientProjector.shutdownNow();
         http.dispatcher().cancelAll(); http.connectionPool().evictAll(); http.dispatcher().executorService().shutdownNow();
     }
 }

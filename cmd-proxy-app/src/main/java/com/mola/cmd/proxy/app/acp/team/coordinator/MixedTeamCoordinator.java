@@ -18,11 +18,14 @@ public final class MixedTeamCoordinator {
     private final CoordinationStore store;
     private final Transport transport;
     private final Map<String, Object> locks = new ConcurrentHashMap<>();
+    private final Map<String, JSONObject> realtimeTeams = new ConcurrentHashMap<>();
+    private final Map<String, Long> realtimeSessionVersions = new ConcurrentHashMap<>();
     public MixedTeamCoordinator(CoordinationStore store, Transport transport) {
         this.store = store; this.transport = transport;
         // A persisted READY projection is not proof that any participant is online
         // after the coordinator restarts. Reconcile every fragment before re-admitting work.
         for (JSONObject record : store.list("teams")) {
+            realtimeTeams.put(record.getString("teamId"), copy(record));
             if ("READY".equals(record.getString("state"))) {
                 record.put("state", "RECOVERING");
                 for (Object value : record.getJSONArray("participants")) ((JSONObject) value).put("state", "RECOVERING");
@@ -288,6 +291,25 @@ public final class MixedTeamCoordinator {
         }
     }
 
+    /** Read-only routing of display events; no durable inbox, receipts or network work. */
+    JSONObject realtimeDestination(String instanceId, JSONObject event) {
+        required(event.getString("eventId"), "eventId");
+        if (!RegistryTeamCoordinator.isRealtimeEvent(event)) throw new CoordinationException("UNAUTHORIZED", "实时通道不能投递控制事件");
+        JSONObject record = realtimeTeams.get(required(event.getString("teamId"), "teamId"));
+        if (record == null || !hasParticipant(record, instanceId)) throw new CoordinationException("UNAUTHORIZED", "事件来源不属于该队伍");
+        String memberId = required(event.getString("teamMemberId"), "teamMemberId");
+        if (!instanceId.equals(findMember(record, memberId).getString("cmdProxyInstanceId")))
+            throw new CoordinationException("UNAUTHORIZED", "事件成员不属于发送实例");
+        if ("MEMBER_SESSION_CHANGED".equals(event.getString("type"))) {
+            long version = event.getLongValue("teamVersion");
+            long durable = participant(record, instanceId).getLongValue("version");
+            long latest = realtimeSessionVersions.merge(record.getString("teamId") + ":" + memberId,
+                    Math.max(version, durable), Math::max);
+            if (version < latest) return object("ignored", true);
+        }
+        return object("homeInstanceId", record.getString("homeInstanceId"), "ownerChatterId", record.getString("ownerChatterId"));
+    }
+
     public void drainEvents() {
         for (JSONObject event : store.list("inbox")) {
             String eventId = event.getString("eventId");
@@ -428,6 +450,7 @@ public final class MixedTeamCoordinator {
         record.put("version", record.getLongValue("version") + 1);
         record.put("updatedAt", System.currentTimeMillis());
         store.save("teams", record.getString("teamId"), record);
+        realtimeTeams.put(record.getString("teamId"), copy(record));
     }
     private JSONObject owned(String id, String owner, String home) {
         JSONObject record = store.find("teams", required(id, "teamId"));
@@ -472,6 +495,9 @@ public final class MixedTeamCoordinator {
     }
     private Object lock(String id) { return locks.computeIfAbsent(id, ignored -> new Object()); }
     public static JSONObject object(String key, Object value) { JSONObject object = new JSONObject(true); object.put(key, value); return object; }
+    static JSONObject object(String key, Object value, String otherKey, Object otherValue) {
+        JSONObject object = object(key, value); object.put(otherKey, otherValue); return object;
+    }
     public static JSONObject copy(JSONObject value) { return JSON.parseObject(value.toJSONString()); }
     private static JSONArray array(JSONObject object, String key) { JSONArray value = object.getJSONArray(key); return value == null ? new JSONArray() : value; }
     private static String required(String value, String field) { if (value == null || value.trim().isEmpty()) throw new CoordinationException("VALIDATION_ERROR", field + " 不能为空"); return value.trim(); }

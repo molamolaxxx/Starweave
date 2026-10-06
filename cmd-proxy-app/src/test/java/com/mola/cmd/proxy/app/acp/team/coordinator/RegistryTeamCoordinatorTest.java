@@ -15,6 +15,21 @@ import static org.junit.Assert.*;
 
 public class RegistryTeamCoordinatorTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
+    @Test public void retiredOrSpoofedRealtimeFrameIsDiscardedWithoutBlockingFollowingTeams() throws Exception {
+        Path root = temporary.newFolder().toPath();
+        RegistryManager registry = new RegistryManager(root.resolve("registry"), 12345, "fixture");
+        RegistryTeamCoordinator service = new RegistryTeamCoordinator(registry, root.resolve("coordination"));
+        try {
+            java.lang.reflect.Method receive = RegistryTeamCoordinator.class.getDeclaredMethod("receiveRealtime", String.class, JSONObject.class);
+            receive.setAccessible(true);
+            JSONObject event = MixedTeamCoordinator.object("eventId", "retired-event");
+            event.put("teamId", "retired"); event.put("teamMemberId", "m1"); event.put("type", "MESSAGE_CHUNK");
+            JSONObject frame = MixedTeamCoordinator.object("operation", "event", "payload", event);
+            assertEquals(true, receive.invoke(service, "other-instance", frame));
+            event.put("type", "TEAM_DELETED"); assertEquals(true, receive.invoke(service, "other-instance", frame));
+            assertTrue(new CoordinationStore(root.resolve("coordination")).list("inbox").isEmpty());
+        } finally { service.close(); registry.close(); }
+    }
 
     @Test public void optionalMolaChatProjectionIsDurableWithoutBlockingCoordinator() throws Exception {
         Path root = temporary.newFolder().toPath();

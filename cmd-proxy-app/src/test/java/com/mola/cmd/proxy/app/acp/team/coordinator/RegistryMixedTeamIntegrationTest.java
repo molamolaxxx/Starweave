@@ -10,6 +10,7 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.*;
 
@@ -57,6 +58,29 @@ public class RegistryMixedTeamIntegrationTest {
                 return delivered.contains("echo:hello-remote") && delivered.contains("tool-test")
                         && delivered.contains("attachments:hello.txt=SGVsbG8=") && delivered.contains("MESSAGE_COMPLETE");
             }, 15000);
+            JSONObject burst = MixedTeamCoordinator.copy(send); burst.remove("uploadIds");
+            burst.put("requestId", "integration-burst"); burst.put("message", "burst:200");
+            assertTrue(request(centerPort, "POST", "/api/starweave/v1/teams/member", burst).getBooleanValue("accepted"));
+            await(() -> events(centerPort, teamId).toJSONString().contains("burst-199|"), 5000);
+            JSONArray streamed = events(centerPort, teamId);
+            List<Long> delays = new java.util.ArrayList<>(); int index = 0;
+            for (Object value : streamed) {
+                JSONObject event = (JSONObject) value;
+                String content = event.getJSONObject("data") == null ? "" : event.getJSONObject("data").getString("content");
+                if ("MESSAGE_CHUNK".equals(event.getString("type")) && content != null && content.startsWith("burst-")) {
+                    assertEquals("burst-" + index++ + "|", content);
+                    delays.add(System.currentTimeMillis() - event.getLongValue("timestamp"));
+                }
+            }
+            assertEquals(200, index);
+            java.util.Collections.sort(delays);
+            System.out.println("REALTIME_BURST chunks=" + index + " medianMs=" + delays.get(100) + " p95Ms=" + delays.get(190) + " maxMs=" + delays.get(199));
+            assertTrue("stream must not accumulate per-event RPC latency: " + delays, delays.get(190) < 2500);
+            for (Path home : new Path[]{centerHome, remoteHome}) {
+                CoordinationStore persisted = new CoordinationStore(home.resolve("team-coordination"));
+                for (String area : new String[]{"inbox", "outbox"}) for (JSONObject queued : persisted.list(area))
+                    assertFalse("text events must bypass durable queues", java.util.Arrays.asList("MESSAGE_UPDATED", "MESSAGE_CHUNK").contains(queued.getString("type")));
+            }
             JSONObject status = object("teamId", teamId); status.put("teamMemberId", "m2"); status.put("coordinated", true); status.put("action", "status");
             assertTrue(request(centerPort, "POST", "/api/starweave/v1/teams/member", status).getBooleanValue("accepted"));
             status.put("action", "history");

@@ -34,7 +34,7 @@ return configured.length>0&&configured.every(function(robot){return robot.proxyE
 
 function renderChatters(){
 var c=document.getElementById('chatterList');
-if(!c)return;var instanceId=(curInstance&&curInstance.instanceId)||'';var starweaveId=instanceId?'starweave-'+instanceId:'等待环境身份加载';
+if(!c)return;var instanceId=curInstance?(curInstance.remote?curInstance.sourceInstanceId:curInstance.instanceId):'';var starweaveId=instanceId?'starweave-'+instanceId:'等待环境身份加载';
 var molaChatters=config.chatterIds.length?config.chatterIds.map(function(id,i){return '<span class="chip">'+esc(id)+'<span class="material-icons" onclick="removeChatter('+i+')" title="移除">close</span></span>'}).join(''):'<span style="color:#9e9e9e;font-size:13px">尚未配置 MolaChat 接入用户</span>';
 c.innerHTML='<section class="access-user-group"><div class="access-user-head"><span class="material-icons">auto_awesome</span>Starweave Chatter ID</div><div class="chip-list"><span class="chip system"><span class="material-icons">lock</span>'+esc(starweaveId)+'</span></div><div class="access-user-help">由当前环境自动生成，用于 Starweave 本地会话、通讯录和路由隔离，不会注册为 MolaChat 用户。</div></section><section class="access-user-group"><div class="access-user-head"><span class="material-icons">account_circle</span>MolaChat Chatter ID</div><div class="chip-list">'+molaChatters+'</div><div class="access-user-help">本地 talkTo 不允许跨 Chatter ID，仅同一 Chatter ID 下的主 ACP 智能体可直接通信；跨用户通信需配置远程通讯并明确指定目标 Chatter ID。</div></section>';
 }

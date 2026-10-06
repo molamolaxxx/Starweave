@@ -86,7 +86,9 @@ public final class RegistryTeamTestNode {
             getHistoryManager().restoreState(session); getHistoryManager().saveLastSessionId(session);
         }
         @Override public void send(String text, List<Map<String, String>> files, PromptOptions options) {
-            getGlobalListener().onMessage(text.startsWith("talk:") ? route.apply(text) : "echo:" + text);
+            if (text.startsWith("burst:")) {
+                for (int i = 0; i < Integer.parseInt(text.substring(6)); i++) getGlobalListener().onMessage("burst-" + i + "|");
+            } else getGlobalListener().onMessage(text.startsWith("talk:") ? route.apply(text) : "echo:" + text);
             if (files != null) for (Map<String, String> file : files)
                 file.forEach((name, content) -> getGlobalListener().onMessage("attachments:" + name + "=" + content));
             JsonObject update = new JsonObject(); update.addProperty("result", "test");

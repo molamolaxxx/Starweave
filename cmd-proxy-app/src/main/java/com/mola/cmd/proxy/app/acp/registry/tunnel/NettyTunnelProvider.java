@@ -15,6 +15,7 @@ import io.netty.handler.ssl.*;
 import io.netty.handler.timeout.*;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.GlobalEventExecutor;
+import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -32,11 +33,24 @@ public final class NettyTunnelProvider implements TunnelProvider {
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
     private TunnelTls tls;
     private boolean closed;
+    private volatile RealtimeReceiver realtimeReceiver;
+    private final Map<String, RealtimePeer> realtimePeers = new ConcurrentHashMap<>();
+    private volatile RealtimePeer clientRealtime = new RealtimePeer();
+    private String realtimeIdentity = "";
+    private DefaultEventExecutorGroup serverRealtimeWorkers, clientRealtimeWorkers;
+
+    @Override public void realtimeReceiver(RealtimeReceiver receiver) { realtimeReceiver = receiver; }
+    @Override public boolean realtimeClientAlive() { return clientRealtime.connected(); }
+    @Override public boolean sendRealtime(String environmentId, JSONObject event) {
+        RealtimePeer peer = environmentId == null ? clientRealtime : realtimePeers.get(environmentId);
+        return peer != null && peer.offer(event);
+    }
 
     @Override public synchronized void startServer(int port, String token, Authorizer authorizer) throws IOException {
         ensureOpen(); stopServer();
         if (tls == null) tls = new TunnelTls();
         serverGroup = group("registry-tunnel-server");
+        serverRealtimeWorkers = realtimeWorkers("registry-realtime-server");
         serverChannels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
         final NioEventLoopGroup group = serverGroup;
         final ChannelGroup channels = serverChannels;
@@ -59,8 +73,12 @@ public final class NettyTunnelProvider implements TunnelProvider {
     @Override public synchronized void startClient(String host, int port, String token, String id, String lease,
                                                   int remotePort, int localPort, String certificate) throws IOException {
         ensureOpen(); stopClient();
+        // Registry leases rotate on reconnect; queued display events still belong to the same center.
+        String identity = host + ":" + port;
+        if (!identity.equals(realtimeIdentity)) { clientRealtime.close(); clientRealtime = new RealtimePeer(); realtimeIdentity = identity; }
         SslContext context = TunnelTls.client(certificate);
         clientGroup = group("registry-tunnel-client");
+        clientRealtimeWorkers = realtimeWorkers("registry-realtime-client");
         clientChannels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
         final NioEventLoopGroup group = clientGroup;
         final ChannelGroup channels = clientChannels;
@@ -79,16 +97,27 @@ public final class NettyTunnelProvider implements TunnelProvider {
     @Override public synchronized void stopServer() {
         for (Session session : sessions.values()) session.close();
         sessions.clear();
+        for (RealtimePeer peer : realtimePeers.values()) peer.close();
+        realtimePeers.clear();
         shutdown(serverChannels, serverGroup); serverChannels = null; serverGroup = null; server = null;
+        if (serverRealtimeWorkers != null) serverRealtimeWorkers.shutdownGracefully(0, 2, TimeUnit.SECONDS).awaitUninterruptibly();
+        serverRealtimeWorkers = null;
     }
     @Override public synchronized void stopClient() {
         clientReady = false; client = null;
         shutdown(clientChannels, clientGroup); clientChannels = null; clientGroup = null;
+        if (clientRealtimeWorkers != null) clientRealtimeWorkers.shutdownGracefully(0, 2, TimeUnit.SECONDS).awaitUninterruptibly();
+        clientRealtimeWorkers = null;
     }
-    @Override public synchronized void close() { closed = true; stopClient(); stopServer(); }
+    @Override public synchronized void close() { closed = true; stopClient(); stopServer(); clientRealtime.close(); }
     private void ensureOpen() throws IOException { if (closed) throw new IOException("隧道已关闭"); }
     private static NioEventLoopGroup group(String name) {
         return new NioEventLoopGroup(1, (java.util.concurrent.ThreadFactory) r -> { Thread t = new Thread(r, name); t.setDaemon(true); return t; });
+    }
+    private static DefaultEventExecutorGroup realtimeWorkers(String name) {
+        return new DefaultEventExecutorGroup(2, (java.util.concurrent.ThreadFactory) r -> {
+            Thread t = new Thread(r, name); t.setDaemon(true); return t;
+        });
     }
     private static void shutdown(ChannelGroup channels, NioEventLoopGroup group) {
         if (channels != null) channels.close().awaitUninterruptibly();
@@ -160,8 +189,21 @@ public final class NettyTunnelProvider implements TunnelProvider {
                             if (!f.isSuccess() || !session.control.isActive() || sessions.get(id) != session) {
                                 if (f.isSuccess()) f.channel().close(); session.close(); return;
                             }
-                            session.listener = f.channel(); channels.add(f.channel()); send(session.control, message("ACK"));
+                            session.listener = f.channel(); channels.add(f.channel());
+                            JSONObject ack = message("ACK"); ack.put("realtimeVersion", 1); send(session.control, ack);
                         });
+            } else if ("REALTIME".equals(type)) {
+                Session session = sessions.get(id);
+                if (session == null || !RemoteEnvironmentRegistry.equal(session.lease, lease)
+                        || !authorizer.authorize(id, lease, session.port, session.run)) { ctx.close(); return; }
+                RealtimePeer peer = realtimePeers.computeIfAbsent(id, ignored -> new RealtimePeer());
+                session.realtime = ctx.channel();
+                realtimeFrames(ctx.channel());
+                ctx.pipeline().remove(this);
+                ctx.pipeline().addLast(serverRealtimeWorkers, "realtime", new RealtimeMessages(peer, id, lease,
+                        () -> sessions.get(id) == session && authorizer.authorize(id, lease, session.port, session.run)));
+                send(ctx.channel(), message("REALTIME_READY"));
+                peer.attach(ctx.channel());
             } else if ("DATA".equals(type)) {
                 Session session = sessions.get(id);
                 if (session == null || !RemoteEnvironmentRegistry.equal(session.lease, lease)
@@ -189,6 +231,7 @@ public final class NettyTunnelProvider implements TunnelProvider {
         final ChannelGroup streams = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
         final Map<String, Channel> pending = new ConcurrentHashMap<>();
         volatile Channel listener;
+        volatile Channel realtime;
         Session(String id, String lease, String run, int port, Channel control, Authorizer authorizer,
                 NioEventLoopGroup group, ChannelGroup channels) {
             this.id = id; this.lease = lease; this.run = run; this.port = port;
@@ -203,7 +246,7 @@ public final class NettyTunnelProvider implements TunnelProvider {
             send(control, m).addListener((ChannelFutureListener) f -> { if (!f.isSuccess()) ch.close(); });
         }
         void close() {
-            if (listener != null) listener.close(); streams.close(); pending.clear(); control.close();
+            if (listener != null) listener.close(); if (realtime != null) realtime.close(); streams.close(); pending.clear(); control.close();
         }
     }
     private final class ServerControl extends Messages {
@@ -220,6 +263,7 @@ public final class NettyTunnelProvider implements TunnelProvider {
         }
     }
     private final class ClientControl extends Messages {
+        private boolean realtimeConnecting;
         final String host, token, id, lease;
         final int port, remotePort, localPort;
         final SslContext ssl;
@@ -241,7 +285,7 @@ public final class NettyTunnelProvider implements TunnelProvider {
         }
         @Override void receive(ChannelHandlerContext ctx, JSONObject m) {
             String type = m.getString("type");
-            if ("ACK".equals(type)) { if (client == ctx.channel()) clientReady = true; }
+            if ("ACK".equals(type)) { if (client == ctx.channel()) { clientReady = true; if (m.getIntValue("realtimeVersion") == 1) openRealtime(); } }
             else if ("PING".equals(type)) send(ctx.channel(), message("PONG"));
             else if ("OPEN".equals(type)) {
                 if (streams.size() >= MAX_STREAMS) { ctx.close(); return; }
@@ -254,6 +298,64 @@ public final class NettyTunnelProvider implements TunnelProvider {
             } else if (!"PONG".equals(type)) ctx.close();
         }
         @Override public void channelInactive(ChannelHandlerContext ctx) { if (client == ctx.channel()) clientReady = false; streams.close(); }
+        void openRealtime() {
+            if (realtimeConnecting || !clientAlive() || group.isShuttingDown()) return;
+            realtimeConnecting = true;
+            connect(group, channels, host, port, ch -> {
+                ch.pipeline().addLast("ssl", ssl.newHandler(ch.alloc(), host, port));
+                framed(ch); realtimeFrames(ch); ch.pipeline().addLast("handshake", new ClientRealtime(this));
+            }).addListener((ChannelFutureListener) future -> {
+                future.channel().closeFuture().addListener(ignored -> {
+                    realtimeConnecting = false;
+                    if (!group.isShuttingDown()) group.schedule(this::openRealtime, 1, TimeUnit.SECONDS);
+                });
+            });
+        }
+    }
+    private final class ClientRealtime extends Messages {
+        final ClientControl control;
+        ClientRealtime(ClientControl control) { this.control = control; }
+        @Override public void handlerAdded(ChannelHandlerContext ctx) {
+            ctx.executor().schedule(() -> { if (ctx.pipeline().context(this) != null) ctx.close(); }, 10, TimeUnit.SECONDS);
+        }
+        @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
+            if (event instanceof SslHandshakeCompletionEvent) {
+                if (((SslHandshakeCompletionEvent) event).isSuccess()) send(ctx.channel(), control.hello("REALTIME"));
+                else ctx.close();
+            } else super.userEventTriggered(ctx, event);
+        }
+        @Override void receive(ChannelHandlerContext ctx, JSONObject m) {
+            if (!"REALTIME_READY".equals(m.getString("type"))) { ctx.close(); return; }
+            realtimeFrames(ctx.channel()); ctx.pipeline().remove(this);
+            ctx.pipeline().addLast(clientRealtimeWorkers, "realtime", new RealtimeMessages(clientRealtime, null, control.lease,
+                    () -> clientAlive() && clientGroup == control.group));
+            clientRealtime.attach(ctx.channel());
+        }
+    }
+    private static void realtimeFrames(Channel channel) {
+        channel.pipeline().replace("frames", "frames", new LengthFieldBasedFrameDecoder(RealtimePeer.MAX_FRAME, 0, 4, 0, 4));
+    }
+    private final class RealtimeMessages extends Messages {
+        final RealtimePeer peer;
+        final String environmentId, lease;
+        final java.util.function.BooleanSupplier authorized;
+        RealtimeMessages(RealtimePeer peer, String id, String lease, java.util.function.BooleanSupplier authorized) {
+            this.peer = peer; this.environmentId = id; this.lease = lease; this.authorized = authorized;
+        }
+        @Override void receive(ChannelHandlerContext ctx, JSONObject frame) {
+            if (!authorized.getAsBoolean()) { ctx.close(); return; }
+            String type = frame.getString("type");
+            if ("EVENT".equals(type)) {
+                RealtimeReceiver receiver = realtimeReceiver;
+                if (receiver == null || !peer.receive(frame, event -> receiver.receive(environmentId, lease, event))) { ctx.close(); return; }
+                JSONObject ack = message("EVENT_ACK"); ack.put("epoch", frame.getString("epoch")); ack.put("sequence", frame.getLongValue("sequence"));
+                send(ctx.channel(), ack);
+            } else if ("EVENT_ACK".equals(type)) peer.acknowledge(frame);
+            else if ("PING".equals(type)) send(ctx.channel(), message("PONG"));
+            else if (!"PONG".equals(type)) ctx.close();
+        }
+        @Override public void channelWritabilityChanged(ChannelHandlerContext ctx) { peer.writable(); ctx.fireChannelWritabilityChanged(); }
+        @Override public void channelInactive(ChannelHandlerContext ctx) { peer.detach(ctx.channel()); }
     }
     private static final class ClientData extends Messages {
         final ClientControl control;
