@@ -24,9 +24,9 @@ test('local owners use instance identity and unknown remote identity stays pendi
 });
 test('completed realtime messages merge source history and ignore an obsolete scope', async () => {
     const streamSource = fs.readFileSync(path.resolve(__dirname, '../../main/resources/configui/assets/js/starweave.js'), 'utf8');
-    const functionSource = streamSource.split('\n').find(line => line.startsWith('async function refreshTeamSessionHistory'));
+    const functionSource = streamSource.slice(streamSource.indexOf('async function refreshTeamSessionHistory('),streamSource.indexOf('function connectTeamSessionStream('));
     const merged = []; let scope = 'one'; let rendered = 0;
-    const context = vm.createContext({teamSession: {loading: false}, teamChatScope: () => scope,
+    const context = vm.createContext({teamSession: {loading: false}, teamHistoryScope: () => scope, selectedTeamSessionMember: () => ({sessionId:'s'}),
         teamSessionPost: async () => ({messages: [{messageId: 'final', revision: 7, content: 'complete'}]}),
         mergeTeamMessage: message => merged.push(message), scheduleTeamSessionRender: () => rendered++});
     vm.runInContext(functionSource, context); await context.refreshTeamSessionHistory();

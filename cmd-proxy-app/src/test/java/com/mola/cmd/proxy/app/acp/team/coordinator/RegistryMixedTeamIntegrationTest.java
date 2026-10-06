@@ -85,6 +85,18 @@ public class RegistryMixedTeamIntegrationTest {
             assertTrue(request(centerPort, "POST", "/api/starweave/v1/teams/member", status).getBooleanValue("accepted"));
             status.put("action", "history");
             assertTrue(request(centerPort, "POST", "/api/starweave/v1/teams/member", status).toJSONString().contains("echo:hello-remote"));
+            JSONObject pagedHistory = MixedTeamCoordinator.copy(status); pagedHistory.put("limit", 1);
+            JSONObject recent = request(centerPort, "POST", "/api/starweave/v1/teams/member", pagedHistory);
+            assertTrue(recent.toJSONString(), recent.getBooleanValue("accepted"));
+            JSONObject recentData = recent.getJSONObject("data").getJSONObject("data");
+            assertEquals(1, recentData.getJSONArray("messages").size()); assertTrue(recentData.getBooleanValue("hasMore"));
+            String boundaryId = recentData.getJSONArray("messages").getJSONObject(0).getString("messageId");
+            pagedHistory.put("before", recentData.getString("olderCursor"));
+            JSONObject previous = request(centerPort, "POST", "/api/starweave/v1/teams/member", pagedHistory);
+            assertTrue(previous.toJSONString(), previous.getBooleanValue("accepted"));
+            JSONArray previousMessages = previous.getJSONObject("data").getJSONObject("data").getJSONArray("messages");
+            assertFalse(previousMessages.isEmpty());
+            for (Object item : previousMessages) assertNotEquals(boundaryId, ((JSONObject)item).getString("messageId"));
             status.put("action", "context");
             assertTrue(request(centerPort, "POST", "/api/starweave/v1/teams/member", status).getBooleanValue("accepted"));
             JSONObject talk = object("teamId", teamId); talk.put("teamMemberId", "m1"); talk.put("coordinated", true);

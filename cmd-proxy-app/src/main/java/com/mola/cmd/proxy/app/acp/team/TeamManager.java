@@ -1448,6 +1448,41 @@ public final class TeamManager implements AutoCloseable {
             if (sessionId == null || sessionId.trim().isEmpty()) {
                 sessionId = client.getSessionId();
             }
+            if (command.getLimit() != null) {
+                com.google.gson.JsonObject legacy = gson.toJsonTree(command).getAsJsonObject();
+                legacy.remove("limit"); legacy.remove("before"); legacy.addProperty("sessionId", sessionId);
+                TeamMemberCommand fullCommand = gson.fromJson(legacy, TeamMemberCommand.class);
+                com.alibaba.fastjson.JSONObject page = client.getHistoryManager().uiHistoryPage(sessionId, command.getBefore(), command.getLimit(), () -> {
+                    TeamCommandResult full = readSessionHistory(requestId, fullCommand);
+                    if (!full.isAccepted()) throw new IllegalStateException(full.getMessage());
+                    com.alibaba.fastjson.JSONObject snapshot = com.alibaba.fastjson.JSON.parseObject(full.toResultMap().get("data"));
+                    com.alibaba.fastjson.JSONArray visible = new com.alibaba.fastjson.JSONArray();
+                    Map<String, Integer> visibleRows = new HashMap<>();
+                    Set<String> visibleEventIds = new HashSet<>();
+                    com.alibaba.fastjson.JSONArray messages = snapshot.getJSONArray("messages");
+                    for (int i = 0; i < messages.size(); i++) {
+                        com.alibaba.fastjson.JSONObject row = messages.getJSONObject(i);
+                        String kind = row.getString("kind"), type = row.getString("eventType"), role = row.getString("role");
+                        com.alibaba.fastjson.JSONObject payload = row.getJSONObject("payload");
+                        if (payload != null && payload.getString("messageId") != null) row.put("messageId", payload.getString("messageId"));
+                        if (payload != null && payload.containsKey("revision")) row.put("revision", payload.getLongValue("revision"));
+                        boolean taskCard = payload != null && ("STARWEAVE_TASK".equals(payload.getString("cardType")) || String.valueOf(payload.getString("eventType")).startsWith("TASK_"));
+                        if ("TEAM_EVENT".equals(kind) && ("TALK_TO_ROUTE_REQUEST".equals(type) || !taskCard && (type == null || !(type.startsWith("TASK_") || type.startsWith("TALK_TO_") || java.util.Arrays.asList("TOOL_CALL", "SUB_AGENT_EVENT", "SCHEDULE_EVENT", "COMPACTION_EVENT", "LIFECYCLE_EVENT", "MESSAGE_ERROR").contains(type))))) continue;
+                        if ("ASSISTANT".equals(role) && (row.getString("content") == null || row.getString("content").trim().isEmpty())) continue;
+                        String eventId = payload == null ? null : payload.getString("eventId");
+                        if (eventId != null && !visibleEventIds.add(eventId)) continue;
+                        String tool = payload == null ? row.getString("toolCallId") : payload.getString("toolCallId");
+                        if (tool != null && !tool.isEmpty()) row.put("messageId", "tool:" + tool);
+                        if (row.getString("messageId") == null) row.put("messageId", "history:" + i);
+                        String id = row.getString("messageId"); Integer previous = visibleRows.get(id);
+                        if (previous == null) { visibleRows.put(id, visible.size()); visible.add(row); }
+                        else if (row.getLongValue("revision") >= visible.getJSONObject(previous).getLongValue("revision")) visible.set(previous, row);
+                    }
+                    snapshot.remove("messages"); snapshot.put("items", visible); return snapshot;
+                });
+                page.put("messages", page.remove("items"));
+                return TeamCommandResult.success(requestId, "OK", "Team session history page loaded", route.team.getVersion(), page);
+            }
             List<com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage> history =
                     client.getHistoryManager().getUiHistory(sessionId);
             Set<String> eventTypes = new HashSet<>();
@@ -1455,6 +1490,7 @@ public final class TeamManager implements AutoCloseable {
             Set<String> channelMessages = new HashSet<>();
             Set<String> schedulePrompts = new HashSet<>();
             Map<String, Integer> lastToolEvents = new HashMap<>();
+            Map<String, Integer> firstToolEvents = new HashMap<>();
             for (int historyIndex = 0; historyIndex < history.size(); historyIndex++) {
                 com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage message =
                         history.get(historyIndex);
@@ -1467,7 +1503,10 @@ public final class TeamManager implements AutoCloseable {
                 eventTypes.add(type);
                 if (TeamEventType.TOOL_CALL.name().equals(type)) {
                     String toolCallId = jsonText(payload, "toolCallId");
-                    if (!toolCallId.isEmpty()) lastToolEvents.put(toolCallId, historyIndex);
+                    if (!toolCallId.isEmpty()) {
+                        lastToolEvents.put(toolCallId, historyIndex);
+                        firstToolEvents.putIfAbsent(toolCallId, historyIndex);
+                    }
                 } else if (TeamEventType.TALK_TO_RECEIVE.name().equals(type)) {
                     String content = jsonText(payload, "content");
                     String sender = jsonText(payload, "senderTeamMemberId");
@@ -1488,20 +1527,25 @@ public final class TeamManager implements AutoCloseable {
             for (int historyIndex = 0; historyIndex < history.size(); historyIndex++) {
                 com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage message =
                         history.get(historyIndex);
+                if (TeamEventType.TOOL_CALL.name().equals(message.getEventType())) {
+                    String toolId = jsonText(message.getEventData(), "toolCallId");
+                    if (!toolId.isEmpty()) {
+                        if (!Integer.valueOf(historyIndex).equals(firstToolEvents.get(toolId))) continue;
+                        // 更新保留在首次调用的位置，分页游标不随完成回调移动。
+                        message = history.get(lastToolEvents.get(toolId));
+                    }
+                }
                 Map<String, Object> value = new LinkedHashMap<>();
                 value.put("role", message.getRole().name());
                 value.put("messageId", message.getMessageId());
                 value.put("revision", message.getRevision());
                 if (message.getRole()
                         == com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage.Role.EVENT) {
-                    if (TeamEventType.TOOL_CALL.name().equals(message.getEventType())
-                            && !jsonText(message.getEventData(), "toolCallId").isEmpty()
-                            && !Integer.valueOf(historyIndex).equals(lastToolEvents.get(
-                                    jsonText(message.getEventData(), "toolCallId")))) {
-                        continue;
-                    }
                     value.put("kind", "TEAM_EVENT");
                     value.put("eventType", message.getEventType());
+                    String eventMessageId = jsonText(message.getEventData(), "messageId");
+                    if (!eventMessageId.isEmpty()) value.put("messageId", eventMessageId);
+                    if (message.getEventData().has("revision")) value.put("revision", message.getEventData().get("revision").getAsLong());
                     value.put("payload", gson.fromJson(
                             message.getEventData(), Map.class));
                 } else if (message.getRole()

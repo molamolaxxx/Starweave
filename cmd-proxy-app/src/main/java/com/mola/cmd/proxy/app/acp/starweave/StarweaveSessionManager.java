@@ -429,6 +429,11 @@ public final class StarweaveSessionManager {
         return eventStore.read(groupId, sessionId, afterSeq, generation).toJson();
     }
 
+    public JSONObject historyPage(String groupId, String sessionId, String before, int limit) {
+        requireKnownSession(groupId, sessionId); ensureHistoryProjection(groupId, sessionId);
+        return eventStore.historyPage(groupId, sessionId, before, limit);
+    }
+
     public JSONObject awaitEventBatch(String groupId, String sessionId, long afterSeq,
                                       Long generation, long timeoutMillis) {
         if (generation == null) requireKnownSession(groupId, sessionId);

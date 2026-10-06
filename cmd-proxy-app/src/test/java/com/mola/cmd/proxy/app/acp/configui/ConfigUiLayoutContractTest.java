@@ -207,8 +207,8 @@ public class ConfigUiLayoutContractTest {
         assertTrue(html.contains("class=\"btn btn-secondary btn-sm btn-start\""));
         assertTrue(html.contains("<span class=\"material-icons\">play_arrow</span>"));
         assertTrue(html.contains("function handleStarMessageScroll()"));
-        assertTrue(html.contains("starSessions.followOutput=box.scrollHeight-box.scrollTop-box.clientHeight<=24"));
-        assertTrue(html.contains("if(follow)box.scrollTop=box.scrollHeight;else box.scrollTop=scrollTop"));
+        assertTrue(html.contains("scrollChatViewport(box,starSessions,loadOlderStarweaveHistory)"));
+        assertTrue(html.contains("function chatRestoreViewport("));
         assertTrue(html.contains("var starEventRenderFrame=0"));
         assertTrue(html.contains("function scheduleStarweaveEventsRender()"));
         assertTrue(html.contains("requestAnimationFrame(function(){starEventRenderFrame=0;renderStarweaveEvents()})"));
@@ -322,7 +322,7 @@ public class ConfigUiLayoutContractTest {
         assertTrue(html.contains("function openTeamSessionResources("));
         assertTrue(html.contains("/api/starweave/v1/teams/resources"));
         assertTrue(html.contains("function handleTeamSessionScroll("));
-        assertTrue(html.contains("teamSession.followOutput=box.scrollHeight-box.scrollTop-box.clientHeight<=24"));
+        assertTrue(html.contains("scrollChatViewport(box,teamSession,loadOlderTeamSessionHistory)"));
         assertTrue(html.contains("/api/starweave/v1/teams/stream"));
         assertTrue(html.contains("function connectTeamSessionStream("));
         assertTrue(html.contains("function scheduleTeamSessionRender("));

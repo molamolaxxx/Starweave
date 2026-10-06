@@ -8,7 +8,7 @@ function fixture(){
  const nodes={};
  const member={teamMemberId:'m',sessionId:'old',state:'SLEEP',acpClientId:'c'};
  const c={console,setTimeout,clearTimeout,curInstance:{instanceId:'i'},activePage:'sessions',starSessions:{selectedGroupId:'g',items:[{groupId:'g',sessionId:'s',generation:1,state:'READY'}],events:[],uploads:[],lastSeq:0},teamSession:{teamId:'t',teamMemberId:'m',members:[member],messages:[],liveItems:[],uploads:[],snapshotToken:0,lastSeq:0},document:{addEventListener:()=>{},getElementById:id=>nodes[id]||(nodes[id]={value:'你好',classList:{contains:()=>true,toggle:()=>{}}})},isAgentOperable:()=>true,esc:s=>String(s||''),showSnackbar:()=>{},renderMarkdown:s=>s,starEventRenderFrame:0,teamEventRenderFrame:0};
- vm.createContext(c);vm.runInContext(source,c);
+ vm.createContext(c);vm.runInContext(fs.readFileSync('cmd-proxy-app/src/main/resources/configui/assets/js/chat-history.js','utf8'),c);vm.runInContext(source,c);
  for(const name of ['renderChatOutbox','renderStarweaveUploads','renderTeamSessionUploads','renderTeamSessionMembers','renderTeamSessionDetail','renderTeamSessionMessages','renderStarweaveEvents','connectTeamSessionStream','connectStarweaveStream'])c[name]=()=>{};
  c.loadStarweaveSessions=async()=>{};
  return c;
@@ -72,7 +72,8 @@ test('definite rejection marks the existing bubble as failed',async()=>{
  }
 });
 test('snapshot replay preserves distinct task cards and renders each event once',()=>{
- const c=fixture();vm.runInContext('renderTeamSessionMessages = '+source.match(/function renderTeamSessionMessages\(\).*\n/)[0],c);
+ const c=fixture();vm.runInContext(source.slice(source.indexOf('function renderTeamSessionMessages('),source.indexOf('function handleTeamSessionScroll(')),c);
+ c.renderChatViewport=(box,html)=>box.innerHTML=html;
  c.teamHistoryItemHtml=m=>'['+m.payload.eventId+']';
  c.teamSession.messages=[{payload:{eventId:'one'}},{payload:{eventId:'one'}},{payload:{eventId:'two'}}];
  c.renderTeamSessionMessages();assert.equal(c.document.getElementById('teamSessionMessages').innerHTML,'[one][two]');

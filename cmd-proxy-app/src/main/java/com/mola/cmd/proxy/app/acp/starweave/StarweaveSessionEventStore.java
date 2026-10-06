@@ -3,6 +3,7 @@ package com.mola.cmd.proxy.app.acp.starweave;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.mola.cmd.proxy.app.utils.CmdProxyHome;
+import com.mola.cmd.proxy.app.acp.common.ChatHistoryPages;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,7 +36,6 @@ public final class StarweaveSessionEventStore {
     private static final Logger log = LoggerFactory.getLogger(StarweaveSessionEventStore.class);
     private static final int DEFAULT_CAPACITY = 2000;
     private static final int MAX_SNAPSHOT_EVENTS = 10_000;
-    private static final long MAX_JOURNAL_BYTES = 16L * 1024L * 1024L;
     private static final String JOURNAL_FILE = "events.jsonl";
 
     private final int capacity;
@@ -44,6 +44,7 @@ public final class StarweaveSessionEventStore {
     private final Map<String, Deque<StarweaveSessionEvent>> events = new ConcurrentHashMap<>();
     private final Map<String, Object> groupLocks = new ConcurrentHashMap<>();
     private final Map<String, Boolean> loadedGroups = new ConcurrentHashMap<>();
+    private final Map<String, ChatHistoryPages> pages = new ConcurrentHashMap<>();
 
     public StarweaveSessionEventStore() {
         this(DEFAULT_CAPACITY, CmdProxyHome.resolve("starweave/events"));
@@ -81,7 +82,7 @@ public final class StarweaveSessionEventStore {
                     groupId, sessionId, turnId, generation, seq,
                     System.currentTimeMillis(), type, payload);
             persist(event);
-            compactIfNeeded(event);
+            // 分页历史保留原始日志，不能再以实时尾部容量截断历史。
             addToRing(groupId, event);
             lock.notifyAll();
             return event;
@@ -130,6 +131,74 @@ public final class StarweaveSessionEventStore {
         long latest = result.isEmpty() ? 0L
                 : result.get(result.size() - 1).getEventSeq();
         return new ReadResult(result, first, latest, false, truncated);
+    }
+
+    public JSONObject historyPage(String groupId, String sessionId, String before, int limit) {
+        requireIdentifier(groupId, "groupId"); requireIdentifier(sessionId, "sessionId");
+        Path journal = root == null ? null : journalPath(groupId, sessionId);
+        try {
+            String version = journal != null && Files.exists(journal)
+                    ? "v1:" + Files.size(journal) + ":" + Files.getLastModifiedTime(journal).toMillis()
+                    : "v1:" + sequences.getOrDefault(groupId, new AtomicLong()).get();
+            String key = groupId + "\n" + sessionId;
+            ChatHistoryPages index = pages.computeIfAbsent(key, ignored -> new ChatHistoryPages(
+                    journal == null ? tempPageDirectory() : journal.resolveSibling("message-pages"), key));
+            JSONObject result = index.page(version, () -> visibleSnapshot(groupId, sessionId, journal), before, limit);
+            result.put("events", result.remove("items")); result.put("latestSeq", result.getLongValue("replayAfter"));
+            return result;
+        } catch (IOException e) { throw new IllegalStateException("会话历史读取失败", e); }
+    }
+
+    private Path tempPageDirectory() {
+        try { Path directory = Files.createTempDirectory("starweave-page-test-"); directory.toFile().deleteOnExit(); return directory; }
+        catch (IOException e) { throw new IllegalStateException(e); }
+    }
+
+    /** 与页面可见行对应：回复片段合并，工具更新覆盖原调用，隐藏内部事件。 */
+    private JSONObject visibleSnapshot(String groupId, String sessionId, Path journal) {
+        List<JSONObject> source = new ArrayList<>();
+        if (journal != null && Files.isRegularFile(journal)) {
+            try (BufferedReader reader = Files.newBufferedReader(journal, StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    try { JSONObject event = JSON.parseObject(line); if (event != null && groupId.equals(event.getString("groupId")) && sessionId.equals(event.getString("sessionId"))) source.add(event); }
+                    catch (RuntimeException malformed) { /* 与原日志读取一致，跳过未完成记录。 */ }
+                }
+            } catch (IOException e) { throw new IllegalStateException("会话历史读取失败", e); }
+        } else for (StarweaveSessionEvent event : snapshot(groupId, sessionId, 0)) source.add(event.toJson());
+        List<JSONObject> rows = new ArrayList<>();
+        Map<String, JSONObject> assistants = new java.util.HashMap<>(), tools = new java.util.HashMap<>();
+        java.util.Set<String> taskIds = new java.util.HashSet<>(); long latest = 0;
+        for (JSONObject event : source) {
+            latest = Math.max(latest, event.getLongValue("eventSeq"));
+            String type = event.getString("type"), turn = event.getString("turnId");
+            if (type == null) continue;
+            if (turn == null) turn = "seq-" + event.getLongValue("eventSeq");
+            JSONObject payload = event.getJSONObject("payload"); if (payload == null) payload = new JSONObject();
+            if ("TURN_COMPLETED".equals(type) || "SESSION_STATE_CHANGED".equals(type)) continue;
+            if ("USER_MESSAGE_ACCEPTED".equals(type) && "HISTORY".equals(payload.getString("source")) && String.valueOf(payload.getString("content")).trim().startsWith("[Starweave Task]\n")) continue;
+            if ((type.startsWith("TASK_") || "STARWEAVE_TASK".equals(payload.getString("cardType")) || String.valueOf(payload.getString("eventType")).startsWith("TASK_")) && payload.getString("eventId") != null && !taskIds.add(payload.getString("eventId"))) continue;
+            if ("ASSISTANT_MESSAGE_DELTA".equals(type)) {
+                JSONObject row = assistants.get(turn);
+                if (row == null) {
+                    row = JSON.parseObject(event.toJSONString()); row.put("messageId", "assistant:" + event.getLongValue("eventSeq"));
+                    row.put("payload", new JSONObject(payload)); assistants.put(turn, row); rows.add(row);
+                } else row.getJSONObject("payload").put("text", row.getJSONObject("payload").getString("text") + (payload.getString("text") == null ? "" : payload.getString("text")));
+                if (row.getJSONObject("payload").getString("text") == null) row.getJSONObject("payload").put("text", "");
+                continue;
+            }
+            if ("TOOL_CALL_UPDATED".equals(type)) {
+                assistants.remove(turn); String tool = payload.getString("toolCallId");
+                if (tool == null) tool = "seq-" + event.getLongValue("eventSeq");
+                JSONObject row = tools.get(tool);
+                if (row == null) { row = JSON.parseObject(event.toJSONString()); row.put("messageId", "tool:" + tool); tools.put(tool, row); rows.add(row); }
+                else row.put("payload", payload);
+                row.put("revision", event.getLongValue("eventSeq")); continue;
+            }
+            JSONObject row = JSON.parseObject(event.toJSONString()); row.put("messageId", "event:" + event.getLongValue("eventSeq")); rows.add(row);
+        }
+        rows.removeIf(row -> "ASSISTANT_MESSAGE_DELTA".equals(row.getString("type")) && row.getJSONObject("payload").getString("text").trim().isEmpty());
+        JSONObject result = new JSONObject(); result.put("items", rows); result.put("replayAfter", latest); return result;
     }
 
     public ReadResult read(String groupId, String sessionId, long afterSeq,
@@ -264,32 +333,6 @@ public final class StarweaveSessionEventStore {
         }
     }
 
-    private void compactIfNeeded(StarweaveSessionEvent event) {
-        if (root == null || event.getEventSeq() % 256L != 0L) return;
-        Path journal = journalPath(event.getGroupId(), event.getSessionId());
-        try {
-            if (Files.size(journal) <= MAX_JOURNAL_BYTES) return;
-            ReadResult snapshot = sessionSnapshot(event.getGroupId(), event.getSessionId());
-            Path temp = journal.resolveSibling(JOURNAL_FILE + ".tmp");
-            try (BufferedWriter writer = Files.newBufferedWriter(temp,
-                    StandardCharsets.UTF_8, StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
-                for (StarweaveSessionEvent retained : snapshot.getEvents()) {
-                    writer.write(retained.toJson().toJSONString());
-                    writer.newLine();
-                }
-            }
-            try {
-                Files.move(temp, journal, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
-                Files.move(temp, journal,
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (IOException e) {
-            log.warn("Failed to compact Starweave event journal {}", journal, e);
-        }
-    }
 
     private void addToRing(String groupId, StarweaveSessionEvent event) {
         Deque<StarweaveSessionEvent> ring = events.computeIfAbsent(

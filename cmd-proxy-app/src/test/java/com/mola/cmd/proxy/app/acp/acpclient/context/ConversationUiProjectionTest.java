@@ -75,4 +75,14 @@ public class ConversationUiProjectionTest {
         assertEquals(Collections.singletonList("photo.png"), messages.get(0).getAttachments());
         assertEquals(replyId, messages.get(1).getMessageId());
     }
+    @Test public void fallbackIdentitiesStayStableWhenUnstructuredMessagesFlushToDisk() throws Exception {
+        ConversationHistoryManager h = history();
+        h.addUserMessage("legacy input"); h.addAssistantMessage("unstructured reply");
+        List<ContextMessage> first = h.getUiHistory("s");
+        String userId = first.get(0).getMessageId(), replyId = first.get(1).getMessageId();
+        assertNotNull(userId); assertNotNull(replyId);
+        h.flushTurn("s");
+        assertEquals(userId, h.getUiHistory("s").get(0).getMessageId());
+        assertEquals(replyId, h.getUiHistory("s").get(1).getMessageId());
+    }
 }

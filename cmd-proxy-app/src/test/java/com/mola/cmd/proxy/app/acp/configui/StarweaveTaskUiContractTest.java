@@ -90,7 +90,7 @@ public class StarweaveTaskUiContractTest {
         String teamRender = section(html, "function renderTeamSessionMessages()",
                 "function handleTeamSessionScroll()");
         assertTrue(teamRender.contains("id=p.eventId||item.eventId"));
-        assertTrue(teamRender.contains("if(seen[id])return false"));
+        assertTrue(teamRender.contains("if(id&&seen[id])return"));
         assertTrue(html.contains("function openTaskFromCard(taskId)"));
     }
 

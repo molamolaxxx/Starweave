@@ -6,3 +6,8 @@
 .session-mobile-list,.session-sidebar-backdrop{display:none}
 .session-input-wrap{position:relative;min-width:0}.session-compose .session-input-wrap textarea{display:block;max-height:none;padding-right:30px}.session-compose .session-input-resize{position:absolute;top:1px;right:1px;width:28px;height:26px;min-height:0;margin:0;padding:0;display:grid;place-items:center;border:0;border-radius:0 8px 0 6px;background:transparent;color:var(--sw-muted);cursor:ns-resize;touch-action:none;user-select:none}.session-input-resize .material-icons{font-size:18px}.session-input-resize:focus-visible{outline:2px solid var(--sw-primary);outline-offset:-2px}
 .message-row.tool-row .event-card{width:min(780px,88%);margin:0}
+.session-messages{overflow-anchor:none}
+.chat-message-content{min-height:100%;display:flow-root}
+.chat-message-content:has(>.session-empty){height:100%}
+.chat-history-status{padding:8px 0 18px;text-align:center;font-size:12px;color:var(--sw-muted,#8993a3);overflow-anchor:none}
+.chat-history-status[role="button"]{cursor:pointer}

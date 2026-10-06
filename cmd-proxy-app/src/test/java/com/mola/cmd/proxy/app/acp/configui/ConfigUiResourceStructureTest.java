@@ -37,6 +37,7 @@ public class ConfigUiResourceStructureTest {
                 "assets/js/registry.js",
                 "assets/js/mcp-auth.js",
                 "assets/js/providers.js",
+                "assets/js/chat-history.js",
                 "assets/js/starweave.js",
                 "assets/js/resources.js",
                 "assets/js/channels.js",

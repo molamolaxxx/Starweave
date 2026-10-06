@@ -112,6 +112,10 @@ public final class StarweaveSessionApiBridge {
         return requireManager().events(groupId, sessionId, afterSeq);
     }
 
+    public static JSONObject historyPage(String groupId, String sessionId, String before, int limit) {
+        return requireManager().historyPage(groupId, sessionId, before, limit);
+    }
+
     public static JSONObject eventBatch(String groupId, String sessionId,
                                         long afterSeq, Long generation) {
         return requireManager().eventBatch(groupId, sessionId, afterSeq, generation);

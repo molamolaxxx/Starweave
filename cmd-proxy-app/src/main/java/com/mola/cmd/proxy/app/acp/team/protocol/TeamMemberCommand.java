@@ -16,6 +16,8 @@ public final class TeamMemberCommand {
     private List<Map<String, String>> files;
     private String sessionId;
     private Integer limit;
+    private String before;
+    public String getBefore() { return before; }
     private String path;
     private Integer maxBytes;
     private String charset;

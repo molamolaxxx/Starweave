@@ -481,6 +481,40 @@ public class TeamMemberCommandTest {
                 dreamRoute, scheduleTaskManager);
     }
 
+    @Test
+    public void pagesVisibleHistoryWithStableToolsAndPreservesLegacyFullHistory() throws Exception {
+        Fixture fixture = fixture();
+        // 显式临时目录，分页索引不能落到开发机的真实会话目录。
+        fixture.current.get().isolatedHistory = new com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager(
+                com.mola.cmd.proxy.app.acp.starweave.StarweaveIdentity.identity("page-test", "robot"),
+                temporaryFolder.newFolder().toPath());
+        try {
+            com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager h = fixture.current.get().getHistoryManager();
+            JsonObject tool = new JsonObject(); tool.addProperty("toolCallId", "tool-1"); tool.addProperty("status", "running");
+            h.addEventMessage("TOOL_CALL", tool);
+            for (int i = 0; i < 119; i++) h.addUserMessage("消息" + i,
+                    com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage.UserOrigin.USER,
+                    java.util.Collections.emptyList(), "message-" + i);
+            JsonObject finished = tool.deepCopy(); finished.addProperty("status", "completed");
+            h.addEventMessage("TOOL_CALL", finished);
+            JsonObject request = JsonParser.parseString(basePayload()).getAsJsonObject(); request.addProperty("limit", 50);
+            JsonObject latest = json(fixture.handler.handleGetSessionHistory("page-latest", one(request.toString())));
+            assertEquals(50, latest.getAsJsonArray("messages").size()); assertTrue(latest.get("hasMore").getAsBoolean());
+            assertEquals("消息69", latest.getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString());
+            request.addProperty("before", latest.get("olderCursor").getAsString());
+            JsonObject older = json(fixture.handler.handleGetSessionHistory("page-older", one(request.toString())));
+            assertEquals(50, older.getAsJsonArray("messages").size());
+            request.addProperty("before", older.get("olderCursor").getAsString());
+            JsonObject first = json(fixture.handler.handleGetSessionHistory("page-first", one(request.toString())));
+            assertEquals(20, first.getAsJsonArray("messages").size()); assertFalse(first.get("hasMore").getAsBoolean());
+            JsonObject card = first.getAsJsonArray("messages").get(0).getAsJsonObject();
+            assertEquals("tool:tool-1", card.get("messageId").getAsString());
+            assertEquals("completed", card.getAsJsonObject("payload").get("status").getAsString());
+            assertEquals(120, json(fixture.handler.handleGetSessionHistory("legacy", one(basePayload())))
+                    .getAsJsonArray("messages").size());
+        } finally { fixture.manager.close(); }
+    }
+
     private static TestClient client(TeamDefinition team, TeamMemberDefinition member,
                                      String sessionId) {
         AcpRobotParam robot = robot();
@@ -489,6 +523,26 @@ public class TeamMemberCommandTest {
                 "team/team-1/" + member.getTeamMemberId(), team.getOwnerChatterId(),
                 team.getTeamId(), member.getTeamMemberId(), member.getSourceRobotName());
         return new TestClient(identity, robot, sessionId);
+    }
+
+    @Test public void pageCoalescesGenericToolsAndUsesPersistedEventIdentityForReplay() throws Exception {
+        Fixture fixture = fixture();
+        fixture.current.get().isolatedHistory = new com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager(
+                com.mola.cmd.proxy.app.acp.starweave.StarweaveIdentity.identity("page-test", "robot"), temporaryFolder.newFolder().toPath());
+        try {
+            com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager h = fixture.current.get().getHistoryManager();
+            h.addToolMessage("generic-tool", "test", "running", new JsonObject(), new JsonObject());
+            h.addToolMessage("generic-tool", "test", "completed", new JsonObject(), new JsonObject());
+            JsonObject event = new JsonObject(); event.addProperty("messageId", "wake-id"); event.addProperty("revision", 42);
+            h.addEventMessage("LIFECYCLE_EVENT", event);
+            JsonObject request = JsonParser.parseString(basePayload()).getAsJsonObject(); request.addProperty("limit", 50);
+            JsonArray messages = json(fixture.handler.handleGetSessionHistory("generic-page", one(request.toString()))).getAsJsonArray("messages");
+            assertEquals(2, messages.size());
+            assertEquals("tool:generic-tool", messages.get(0).getAsJsonObject().get("messageId").getAsString());
+            assertEquals("completed", messages.get(0).getAsJsonObject().get("status").getAsString());
+            assertEquals("wake-id", messages.get(1).getAsJsonObject().get("messageId").getAsString());
+            assertEquals(42, messages.get(1).getAsJsonObject().get("revision").getAsLong());
+        } finally { fixture.manager.close(); }
     }
 
     private static AcpRobotParam robot() {
@@ -521,6 +575,10 @@ public class TeamMemberCommandTest {
     }
 
     private static final class TestClient extends AcpClient {
+        private com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager isolatedHistory;
+        @Override public com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager getHistoryManager() {
+            return isolatedHistory == null ? super.getHistoryManager() : isolatedHistory;
+        }
         private void changeSession(String sessionId) { setSessionId(sessionId); }
         private String message;
         private List<Map<String, String>> files;

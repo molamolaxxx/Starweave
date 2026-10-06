@@ -57,6 +57,26 @@ public class ConversationHistoryManager {
     private final List<ContextMessage> currentTurn = new ArrayList<>();
     private ContextMessage streamingAssistant;
     private final java.util.Map<String, ContextMessage> acceptedUiMessages = new java.util.LinkedHashMap<>();
+    private final Map<String, com.mola.cmd.proxy.app.acp.common.ChatHistoryPages> uiPages = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public synchronized com.alibaba.fastjson.JSONObject uiHistoryPage(String sessionId, String before, int limit,
+            java.util.function.Supplier<com.alibaba.fastjson.JSONObject> projection) {
+        Path directory = sessionBaseDir.resolve(sessionId).normalize();
+        if (!directory.startsWith(sessionBaseDir.normalize())) throw new IllegalArgumentException("会话位置无效");
+        ensureCurrentUiIdentities();
+        StringBuilder version = new StringBuilder("v1:");
+        try {
+            if (Files.isDirectory(directory)) try (Stream<Path> files = Files.list(directory)) {
+                for (Path path : files.filter(p -> p.getFileName().toString().startsWith("turn_") && p.toString().endsWith(".json")).sorted().collect(java.util.stream.Collectors.toList())) {
+                    version.append(path.getFileName()).append(':').append(Files.size(path)).append(':').append(Files.getLastModifiedTime(path).toMillis()).append(';');
+                }
+            }
+        } catch (IOException e) { throw new IllegalStateException("会话历史读取失败", e); }
+        String memory = PRETTY_GSON.toJson(currentTurn) + PRETTY_GSON.toJson(acceptedUiMessages) + PRETTY_GSON.toJson(streamingAssistant);
+        version.append(UUID.nameUUIDFromBytes(memory.getBytes(StandardCharsets.UTF_8)));
+        return uiPages.computeIfAbsent(sessionId, id -> new com.mola.cmd.proxy.app.acp.common.ChatHistoryPages(directory.resolve("ui-message-pages"), sessionBaseDir + "\n" + id))
+                .page(version.toString(), projection, before, limit);
+    }
 
     public synchronized void acceptUiMessage(String id, String content, List<String> attachments) {
         if (id != null) acceptedUiMessages.put(id,
@@ -621,8 +641,11 @@ public class ConversationHistoryManager {
                                 try {
                                     String content = new String(Files.readAllBytes(turnFile), StandardCharsets.UTF_8);
                                     JsonArray array = JsonParser.parseString(content).getAsJsonArray();
+                                    int messageIndex = 0;
                                     for (JsonElement elem : array) {
-                                        result.add(deserializeMessage(elem.getAsJsonObject()));
+                                        ContextMessage message = deserializeMessage(elem.getAsJsonObject());
+                                        if (message.getMessageId() == null) message.withIdentity("history:" + sessionId + ":" + turnFile.getFileName() + ":" + messageIndex, message.getRevision());
+                                        result.add(message); messageIndex++;
                                     }
                                 } catch (IOException e) {
                                     logger.warn("读取 turn 文件失败: {}", turnFile, e);
@@ -633,8 +656,16 @@ public class ConversationHistoryManager {
                 }
             }
         }
+        // 首次展示时补稳定标识，随后 flush 持久化同一 ID，游标不会随落盘失效。
+        ensureCurrentUiIdentities();
         result.addAll(currentTurn);
         return Collections.unmodifiableList(result);
+    }
+
+    private void ensureCurrentUiIdentities() {
+        for (ContextMessage message : currentTurn) {
+            if (message.getMessageId() == null) message.withIdentity("ui:" + UUID.randomUUID(), message.getRevision());
+        }
     }
 
     /**

@@ -756,6 +756,7 @@ public class ConfigUiServer {
         addConfigUiAsset(assets, "js/core.js", "application/javascript; charset=utf-8", false);
         addConfigUiAsset(assets, "js/mcp-auth.js", "application/javascript; charset=utf-8", false);
         addConfigUiAsset(assets, "js/providers.js", "application/javascript; charset=utf-8", false);
+        addConfigUiAsset(assets, "js/chat-history.js", "application/javascript; charset=utf-8", false);
         addConfigUiAsset(assets, "js/starweave.js", "application/javascript; charset=utf-8", false);
         addConfigUiAsset(assets, "js/resources.js", "application/javascript; charset=utf-8", false);
         addConfigUiAsset(assets, "js/channels.js", "application/javascript; charset=utf-8", false);
@@ -1295,7 +1296,9 @@ public class ConfigUiServer {
             String groupId = param(exchange, "groupId");
             String sessionId = param(exchange, "sessionId");
             long afterSeq = parseLong(param(exchange, "after"), 0L);
-            JSONObject data = StarweaveSessionApiBridge.eventBatch(
+            JSONObject data = param(exchange, "limit") != null
+                    ? StarweaveSessionApiBridge.historyPage(param(exchange, "groupId"), param(exchange, "sessionId"), param(exchange, "before"), intParam(exchange, "limit", 50))
+                    : StarweaveSessionApiBridge.eventBatch(
                     groupId, sessionId, afterSeq, null);
             sendResponse(exchange, 200, "application/json",
                     JSON.toJSONString(starweaveEnvelope(null, true, "OK", "", data)));
