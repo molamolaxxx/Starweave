@@ -38,14 +38,14 @@ object CmdReceiver {
 
     private fun init(serverPort: Int) {
         val protoRpcConfigFactory = ProtoRpcConfigFactory.fetch()
-        if (protoRpcConfigFactory.initialized()) {
-            return
+        if (!protoRpcConfigFactory.initialized()) {
+            val prop = RpcProperties()
+            prop.startConfigServer = false
+            prop.serverPort = serverPort
+            prop.maxClientTimeout = 60 * 1000 * 10
+            protoRpcConfigFactory.init(prop)
         }
-        val prop = RpcProperties()
-        prop.startConfigServer = false
-        prop.serverPort = serverPort
-        prop.maxClientTimeout =  60 * 1000 * 10
-        protoRpcConfigFactory.init(prop)
+        OptionalReverseRegistration.install(protoRpcConfigFactory, CmdProxyConf.Receiver.listenedSenderAddress)
     }
 
     private fun start(cmdName: String, cmdGroup: String, description: String) {
