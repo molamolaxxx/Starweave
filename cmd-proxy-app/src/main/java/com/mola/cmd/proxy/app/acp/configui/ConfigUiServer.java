@@ -112,6 +112,7 @@ public class ConfigUiServer {
     private volatile String updateMessage = "";
     private volatile boolean automaticUpdate = false;
     private volatile boolean updatePreparedForRestart = false;
+    private WindowsJarUpdate windowsJarUpdate;
 
     /**
      * @param port            监听端口
@@ -2682,9 +2683,6 @@ public class ConfigUiServer {
     }
 
     private boolean requestJarUpdate(boolean automatic) {
-        if (updatePreparedForRestart) {
-            return false;
-        }
         if (!updating.compareAndSet(false, true)) {
             return false;
         }
@@ -2725,10 +2723,12 @@ public class ConfigUiServer {
             String updateBaseUrl = "https://" + CmdProxyConf.INSTANCE.getRemoteHost()
                     + "/download/cmd-proxy.jar";
             String expectedMd5 = downloadRemoteMd5(updateBaseUrl + ".md5");
-            String currentMd5 = calculateMd5(jarPath);
+            String currentMd5 = calculateMd5(windowsJarUpdate == null
+                    ? jarPath : windowsJarUpdate.comparisonJar());
             if (expectedMd5.equalsIgnoreCase(currentMd5)) {
                 updateProgress = 100;
-                updateMessage = "当前已是最新版本";
+                updateMessage = updatePreparedForRestart
+                        ? "最新版本已准备完成，关闭程序后替换生效" : "当前已是最新版本";
                 updateStatus = "latest";
                 logger.debug("JAR 已是最新版本: {}", jarPath);
                 return;
@@ -2777,34 +2777,19 @@ public class ConfigUiServer {
 
             boolean isWindows = System.getProperty("os.name").toLowerCase().contains("win");
             if (isWindows) {
-                // Windows下无法原地替换运行中的JAR，先写到.new.jar，再通过脚本异步替换
-                Path newJar = jarPath.resolveSibling(".cmd-proxy-update-" +
-                        UUID.randomUUID() + ".new.jar");
-                Files.move(tmpFile, newJar, StandardCopyOption.REPLACE_EXISTING);
-                tmpFile = null;
-
-                Path scriptFile = jarPath.resolveSibling(".cmd-proxy-update-replace-" +
-                        UUID.randomUUID() + ".bat");
-                try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(scriptFile))) {
-                    pw.println("@echo off");
-                    pw.println("set OLD=" + jarPath.toAbsolutePath());
-                    pw.println("set NEW=" + newJar.toAbsolutePath());
-                    pw.println("set SELF=" + scriptFile.toAbsolutePath());
-                    pw.println(":wait");
-                    pw.println("ping 127.0.0.1 -n 2 >nul");
-                    pw.println("move /Y \"%NEW%\" \"%OLD%\" >nul 2>&1");
-                    pw.println("if errorlevel 1 goto wait");
-                    pw.println("del \"%SELF%\"");
+                if (windowsJarUpdate == null) {
+                    windowsJarUpdate = new WindowsJarUpdate(jarPath, script ->
+                            Runtime.getRuntime().exec(new String[]{"cmd.exe", "/c", "start",
+                                    "/min", "", script.toAbsolutePath().toString()}));
                 }
-                Runtime.getRuntime().exec(
-                        new String[]{"cmd.exe", "/c", "start", "/min", "",
-                                scriptFile.toAbsolutePath().toString()});
+                windowsJarUpdate.stage(tmpFile);
+                tmpFile = null;
 
                 updateProgress = 100;
                 updatePreparedForRestart = true;
-                updateMessage = "更新已准备完成，关闭程序后自动替换并重启";
+                updateMessage = "最新版本已准备完成，关闭程序后替换生效；仍会继续检查更新";
                 updateStatus = "done";
-                logger.info("JAR 更新脚本已创建: {}", scriptFile);
+                logger.info("Windows 待安装 JAR 已更新: {}", windowsJarUpdate.comparisonJar());
             } else {
                 Files.move(tmpFile, jarPath, StandardCopyOption.REPLACE_EXISTING);
                 tmpFile = null;

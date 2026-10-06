@@ -26,12 +26,11 @@ var label=btn.querySelector('.btn-text');if(label)label.textContent=text;
 async function syncUpdateButtonStatus(){
 try{
 var r=await api('/api/update-jar/status');var d=await r.json();
-if(d.restartRequired)setUpdateButtonState(true,'重启后生效');
-else if(d.status==='checking')setUpdateButtonState(true,'正在检查最新版本');
+if(d.status==='checking')setUpdateButtonState(true,'正在检查最新版本');
 else if(d.status==='downloading'){
 setUpdateButtonState(true,'正在下载最新版本');
 if(d.automatic&&lastUpdateStatus!=='downloading')showSnackbar('检测到新版本，正在自动下载最新版本');
-}else setUpdateButtonState(false,'检查更新');
+}else setUpdateButtonState(false,d.restartRequired?'检查更新（重启后生效）':'检查更新');
 lastUpdateStatus=d.status||'idle';
 }catch(e){}
 }
@@ -66,7 +65,7 @@ document.getElementById('updateMsg').textContent=d.message||
 (d.status==='latest'?'当前已是最新版本':'更新完成，重启后生效');
 setTimeout(function(){
 closeDialog('updateOverlay');
-setUpdateButtonState(!!d.restartRequired,d.restartRequired?'重启后生效':'检查更新');
+setUpdateButtonState(false,d.restartRequired?'检查更新（重启后生效）':'检查更新');
 },3000);
 }else if(d.status==='error'){
 clearInterval(timer);
