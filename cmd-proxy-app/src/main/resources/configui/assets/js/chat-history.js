@@ -3,14 +3,16 @@ var chatViewportStates=new WeakMap();
 function starHistoryScope(){var s=selectedStarSession()||{};return starChatScope()+'|'+(s.sessionId||'')+'|'+(s.generation||0)}
 function teamHistoryScope(){return teamChatScope()+'|'+((selectedTeamSessionMember()||{}).sessionId||'')}
 function chatHistoryState(owner,scope){
-if(!owner.history||owner.history.scope!==scope)owner.history={scope:scope,cursor:null,hasMore:false,loading:false,loaded:false,error:''};
+if(!owner.history||owner.history.scope!==scope)owner.history={scope:scope,cursor:null,hasMore:false,loading:false,loaded:false,olderRequested:false,error:''};
 return owner.history;
 }
 function chatHistoryStatus(history,retry){
 if(!history)return '';
-var text=history.loading?'正在加载历史消息…':history.error?'历史加载失败，点击重试':history.loaded&&!history.hasMore?'没有更早的消息了':'';
-return text?'<div class="chat-history-status"'+(history.error?' role="button" tabindex="0" onclick="'+retry+'()" onkeydown="if(event.key===\'Enter\')'+retry+'()"':'')+'>'+text+'</div>':'';
+var text=history.loading?'正在加载历史消息…':history.error?'历史加载失败，点击重试':history.loaded&&history.olderRequested&&!history.hasMore?'没有更早的消息了':'';
+return text?'<div class="chat-history-status"'+(history.error?' role="button" tabindex="0" onclick="'+retry+'()" onkeydown="if(event.key===\'Enter\')'+retry+'()"':' role="status"')+'>'+(history.loading?chatLoadingHtml(text):text)+'</div>':'';
 }
+function chatLoadingHtml(text){return '<span class="chat-loading"><span class="chat-loading-spinner" aria-hidden="true"></span><span>'+text+'</span></span>'}
+function chatEmptyHtml(history){return '<div class="session-empty"><div'+(!history.loaded&&!history.error?' role="status"':'')+'>'+(!history.loaded?(history.error?'<p>消息加载失败</p>':chatLoadingHtml('正在加载消息…')):'<p>开始一段新对话</p>')+'</div></div>'}
 function chatVisibleAnchor(box){
 var bounds=box.getBoundingClientRect(),nodes=box.querySelectorAll('[data-chat-key]');
 for(var i=0;i<nodes.length;i++){var rect=nodes[i].getBoundingClientRect();if(rect.bottom>bounds.top+2)return{key:nodes[i].getAttribute('data-chat-key'),offset:rect.top-bounds.top}}

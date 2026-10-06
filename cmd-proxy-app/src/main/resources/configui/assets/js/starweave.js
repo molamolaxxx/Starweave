@@ -61,7 +61,7 @@ function renderStarweaveEvents(){
 var box=document.getElementById('starSessionMessages');if(!box)return;
 var scope=starHistoryScope(),history=chatHistoryState(starSessions,scope),items=reduceStarweaveEvents(starSessions.events),pending=pendingChatHtml(starChatScope(),(selectedStarSession()||{}).sessionId);
 var html=items.map(function(item){var p=item.payload||{};if(item.kind==='USER_MESSAGE_ACCEPTED')return '<div class="message-row user"><div class="message-bubble">'+esc(p.content||'')+messageAttachmentsHtml(p.attachments)+'</div></div>';if(item.kind==='assistant')return '<div class="message-row assistant"><div class="message-bubble"><div class="markdown">'+renderMarkdown(item.text)+'</div></div></div>';if(item.kind==='tool'){var tool=p.update||{};return '<div class="message-row tool-row"><div class="event-card tool"><div class="event-card-head"><span class="material-icons">construction</span><span class="tool-call-title">'+esc(p.title||'工具调用')+'</span><span class="session-status '+normalized(p.status)+'">'+esc(p.status||'running')+'</span></div><details><summary>输入与输出</summary><div class="event-detail">'+esc(JSON.stringify(tool,null,2))+'</div></details></div></div>'}return eventCardHtml(item)}).join('')+pending;
-renderChatViewport(box,chatHistoryStatus(history,'loadOlderStarweaveHistory')+(html||'<div class="session-empty"><p>'+(!history.loaded?'正在加载消息…':'开始一段新对话')+'</p></div>'),items.map(function(item){return item.key}),scope,starSessions);
+renderChatViewport(box,chatHistoryStatus(history,'loadOlderStarweaveHistory')+(html||chatEmptyHtml(history)),items.map(function(item){return item.key}),scope,starSessions);
 }
 function scheduleStarweaveEventsRender(){if(starEventRenderFrame)return;starEventRenderFrame=requestAnimationFrame(function(){starEventRenderFrame=0;renderStarweaveEvents()})}
 function cancelStarweaveEventsRender(){if(!starEventRenderFrame)return;cancelAnimationFrame(starEventRenderFrame);starEventRenderFrame=0}
@@ -71,6 +71,7 @@ async function loadStarweaveSnapshot(){
 var session=selectedStarSession();if(activePage!=='sessions'||!session||starSessions.transitioning||!session.sessionId)return;
 var version=starSessions.transitionId,key=starHistoryScope(),token=++starSessions.snapshotToken,history=chatHistoryState(starSessions,key);
 starSessions.polling=true;
+if(!history.loaded){history.error='';renderStarweaveEvents()}
 try{
 var response=await api('/api/starweave/v1/sessions/events?groupId='+encodeURIComponent(session.groupId)+'&sessionId='+encodeURIComponent(session.sessionId)+'&limit=50'),result=await response.json();
 if(token!==starSessions.snapshotToken||version!==starSessions.transitionId||starSessions.transitioning||key!==starHistoryScope())return;
@@ -89,7 +90,8 @@ async function loadOlderStarweaveHistory(){
 var session=selectedStarSession(),scope=starHistoryScope(),history=chatHistoryState(starSessions,scope);
 if(!session||history.loading||starSessions.polling||starSessions.transitioning)return;
 if(!history.loaded){await loadStarweaveSnapshot();return}
-if(!history.hasMore||!history.cursor)return;
+var firstOlderRequest=!history.olderRequested;history.olderRequested=true;
+if(!history.hasMore||!history.cursor){if(firstOlderRequest)renderStarweaveEvents();return}
 history.loading=true;history.error='';renderStarweaveEvents();
 try{
 var response=await api('/api/starweave/v1/sessions/events?groupId='+encodeURIComponent(session.groupId)+'&sessionId='+encodeURIComponent(session.sessionId)+'&limit=50&before='+encodeURIComponent(history.cursor)),result=await response.json();
@@ -255,6 +257,7 @@ if(!member||!teamSession.teamId)return;
 closeTeamSessionStream();teamSession.loading=true;
 function current(){return owner===teamSession&&token===teamSession.snapshotToken&&key===teamHistoryScope()}
 var history=chatHistoryState(teamSession,key);
+if(!history.loaded){history.error='';renderTeamSessionMessages()}
 // 辅助信息独立刷新，不挡住消息首屏。
 teamSessionPost('listSessions',{limit:20}).then(function(data){if(current()){teamSession.sessions=data.sessions||[];renderTeamSessionDetail(false)}}).catch(function(){});
 teamSessionPost('context').then(function(data){if(current()&&data.contextUsagePercentage!==undefined){member.contextUsagePercentage=data.contextUsagePercentage;renderTeamSessionDetail(false)}}).catch(function(){});
@@ -275,7 +278,8 @@ async function loadOlderTeamSessionHistory(){
 var owner=teamSession,scope=teamHistoryScope(),member=selectedTeamSessionMember(),history=chatHistoryState(teamSession,scope);
 if(!member||teamSession.loading||history.loading)return;
 if(!history.loaded){await loadTeamSessionSnapshot();return}
-if(!history.hasMore||!history.cursor)return;
+var firstOlderRequest=!history.olderRequested;history.olderRequested=true;
+if(!history.hasMore||!history.cursor){if(firstOlderRequest)renderTeamSessionMessages();return}
 history.loading=true;history.error='';renderTeamSessionMessages();
 try{
 var data=await teamSessionPost('history',{limit:50,before:history.cursor,sessionId:member.sessionId});
@@ -304,7 +308,7 @@ var scope=teamHistoryScope(),history=chatHistoryState(teamSession,scope),seen={}
 teamSession.messages.forEach(function(item){var p=item.payload||{},id=p.eventId||item.eventId;if(id&&seen[id])return;if(id)seen[id]=true;var row=teamHistoryItemHtml(item);if(row){html+=row;keys.push(teamMessageIdentity(item)||'history:'+keys.length)}});
 teamSession.liveItems.forEach(function(item,index){var row=teamLiveItemHtml(item);if(row){html+=row;keys.push('live:'+index)}});
 html+=pendingChatHtml(teamChatScope(),(selectedTeamSessionMember()||{}).sessionId);
-renderChatViewport(box,chatHistoryStatus(history,'loadOlderTeamSessionHistory')+(html||'<div class="session-empty"><p>'+(!history.loaded?'正在加载消息…':'开始一段新对话')+'</p></div>'),keys,scope,teamSession);
+renderChatViewport(box,chatHistoryStatus(history,'loadOlderTeamSessionHistory')+(html||chatEmptyHtml(history)),keys,scope,teamSession);
 }
 function handleTeamSessionScroll(){var box=document.getElementById('teamSessionMessages');if(box)scrollChatViewport(box,teamSession,loadOlderTeamSessionHistory)}
 function scheduleTeamSessionRender(){if(teamEventRenderFrame)return;teamEventRenderFrame=requestAnimationFrame(function(){teamEventRenderFrame=0;renderTeamSessionMessages()})}

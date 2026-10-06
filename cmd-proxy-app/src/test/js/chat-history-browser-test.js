@@ -49,14 +49,20 @@ async function run() {
                 });
                 window.pageData = function(before) {const end = before ? Number(before) : entries.length, start = Math.max(0, end - 50); return {events: entries.slice(start, end), replayAfter: entries.length, hasMore: start > 0, olderCursor: start > 0 ? String(start) : null};};
                 api = async function(url) {
+                    if (window.initialGate) await initialGate;
                     calls.push(url); const before = new URL(url, location.href).searchParams.get('before');
                     if (before && olderGate) await olderGate;
                     if (before && historyFailure) return {ok: false, json: async () => ({accepted: false, message: '测试失败'})};
                     return {ok: true, json: async () => ({accepted: true, data: pageData(before)})};
                 };
                 starSessions.items = [{groupId: 'g', sessionId: 's', generation: 1, state: 'READY', robotName: '测试智能体'}];
-                return selectStarweaveSession('g');
+                window.initialGate = new Promise(resolve => window.releaseInitial = resolve);
+                window.initialLoad = selectStarweaveSession('g');
             });
+            assert.equal(await page.locator('#starSessionMessages .chat-loading-spinner').count(), 1);
+            assert.equal(await page.locator('#starSessionMessages .chat-history-status').count(), 0);
+            assert.equal(await page.locator('#starSessionMessages .chat-loading-spinner').evaluate(node => getComputedStyle(node).animationName), 'chat-loading-spin');
+            await page.evaluate(() => {releaseInitial(); initialGate = null; return initialLoad;});
             assert.equal(await page.locator('#starSessionMessages [data-chat-key]').count(), 50);
             await page.waitForFunction(() => {const img = document.querySelector('#starSessionMessages img'); return img && img.complete && img.naturalHeight > 0;});
             await frame(page);
@@ -67,6 +73,7 @@ async function run() {
                 const box = document.getElementById('starSessionMessages'); box.dispatchEvent(new WheelEvent('wheel', {deltaY: -100})); box.scrollTop = 200; handleStarMessageScroll();
             });
             await frame(page); const before = await anchor(page, 'starSessionMessages');
+            assert.equal(await page.locator('#starSessionMessages .chat-history-status .chat-loading-spinner').count(), 1);
             await page.evaluate(() => {releaseOlder(); olderGate = null;});
             await page.waitForFunction(() => starSessions.events.length === 100 && !starSessions.history.loading);
             await frame(page); await checkAnchor(page, 'starSessionMessages', before);
@@ -95,14 +102,19 @@ async function run() {
                 window.metadataGate = new Promise(resolve => window.releaseMetadata = resolve);
                 window.teamEntries = entries.map(event => event.type === 'TOOL_CALL_UPDATED' ? {kind: 'TEAM_EVENT', eventType: 'TOOL_CALL', messageId: event.messageId, revision: 1, payload: event.payload} : {role: event.type === 'ASSISTANT_MESSAGE_DELTA' ? 'ASSISTANT' : 'USER', messageId: event.messageId, revision: 1, content: event.payload.content || event.payload.text});
                 teamSessionPost = async function(action, body) {
+                    if (action === 'history' && window.teamInitialGate) await teamInitialGate;
                     calls.push({action, body}); if (action !== 'history') {await metadataGate; return {};}
                     if (body.before && olderGate) await olderGate;
                     const end = body.before ? Number(body.before) : teamEntries.length, start = Math.max(0, end - 50);
                     return {sessionId: 'ts', messages: teamEntries.slice(start, end), replayAfter: 200, hasMore: start > 0, olderCursor: start > 0 ? String(start) : null};
                 };
                 starTeams.items = [{teamId: 't', name: '测试团队', members: [{teamMemberId: 'm', acpClientId: 'c', sessionId: 'ts', displayName: '成员', state: 'READY'}]}];
+                window.teamInitialGate = new Promise(resolve => window.releaseTeamInitial = resolve);
                 openTeamSessionDialog('t', 'm');
             });
+            assert.equal(await page.locator('#teamSessionMessages .chat-loading-spinner').count(), 1);
+            assert.equal(await page.locator('#teamSessionMessages .chat-history-status').count(), 0);
+            await page.evaluate(() => {releaseTeamInitial(); teamInitialGate = null;});
             await page.waitForFunction(() => teamSession.history && teamSession.history.loaded && !teamSession.loading);
             assert.equal(await page.locator('#teamSessionMessages [data-chat-key]').count(), 50);
             await frame(page);
@@ -111,6 +123,7 @@ async function run() {
                 const box = document.getElementById('teamSessionMessages'); box.dispatchEvent(new WheelEvent('wheel', {deltaY: -100})); box.scrollTop = 180; handleTeamSessionScroll();
             });
             await frame(page); const teamBefore = await anchor(page, 'teamSessionMessages');
+            assert.equal(await page.locator('#teamSessionMessages .chat-history-status .chat-loading-spinner').count(), 1);
             await page.evaluate(() => {releaseOlder(); olderGate = null;});
             await page.waitForFunction(() => teamSession.messages.length === 100 && !teamSession.history.loading);
             await frame(page); await checkAnchor(page, 'teamSessionMessages', teamBefore);
@@ -128,6 +141,18 @@ async function run() {
             });
             assert.equal(await page.evaluate(() => teamSession.messages.length), 0);
             await page.evaluate(() => releaseMetadata());
+            // 一页就能展示完的会话，首屏也不显示结束提示；上滑触发后才显示。
+            await page.evaluate(() => {closeTeamSessionDialog(); entries = entries.slice(0, 20); return selectStarweaveSession('g');});
+            assert.equal(await page.locator('#starSessionMessages .chat-history-status').count(), 0);
+            await frame(page);
+            await page.evaluate(() => {const box = document.getElementById('starSessionMessages'); box.dispatchEvent(new WheelEvent('wheel', {deltaY: -100})); box.scrollTop = 0; handleStarMessageScroll();});
+            assert.match(await page.locator('#starSessionMessages .chat-history-status').textContent(), /没有更早的消息了/);
+            await page.evaluate(() => {teamEntries = teamEntries.slice(0, 20); openTeamSessionDialog('t', 'm');});
+            await page.waitForFunction(() => teamSession.history && teamSession.history.loaded && !teamSession.loading);
+            assert.equal(await page.locator('#teamSessionMessages .chat-history-status').count(), 0);
+            await frame(page);
+            await page.evaluate(() => {const box = document.getElementById('teamSessionMessages'); box.dispatchEvent(new WheelEvent('wheel', {deltaY: -100})); box.scrollTop = 0; handleTeamSessionScroll();});
+            assert.match(await page.locator('#teamSessionMessages .chat-history-status').textContent(), /没有更早的消息了/);
             results.push({viewport, firstPage: 50, historyAnchored: true, bottomAfterImage: true, teamMetadataIndependent: true, staleResponseIgnored: true});
             await context.close();
         }

@@ -14,6 +14,22 @@ function fixture(){
 }
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve}}
 function response(events,extra={}){return {ok:true,json:async()=>({accepted:true,data:{events,replayAfter:200,hasMore:true,olderCursor:'cursor',...extra}})}}
+test('initial load and older load use a spinner while errors stay retryable',()=>{
+ const c=fixture(),history=c.chatHistoryState(c.starSessions,c.starHistoryScope());
+ assert.match(c.chatEmptyHtml(history),/chat-loading-spinner/);assert.match(c.chatEmptyHtml(history),/正在加载消息/);
+ history.loaded=true;history.loading=true;
+ assert.match(c.chatHistoryStatus(history,'retry'),/chat-loading-spinner/);assert.match(c.chatHistoryStatus(history,'retry'),/正在加载历史消息/);
+ history.loading=false;history.error='failed';
+ assert.match(c.chatHistoryStatus(history,'retry'),/onclick="retry\(\)"/);assert.doesNotMatch(c.chatHistoryStatus(history,'retry'),/chat-loading-spinner/);
+});
+test('end of history stays hidden until an older-history action, including single-page sessions',async()=>{
+ for(const [owner,scope,action] of [['starSessions','starHistoryScope','loadOlderStarweaveHistory'],['teamSession','teamHistoryScope','loadOlderTeamSessionHistory']]){
+  const c=fixture(),history=c.chatHistoryState(c[owner],c[scope]());history.loaded=true;
+  assert.equal(c.chatHistoryStatus(history,'retry'),'');
+  await c[action]();assert.match(c.chatHistoryStatus(history,'retry'),/没有更早的消息了/);
+  assert.equal(c.chatHistoryStatus(c.chatHistoryState(c[owner],'another-session'),'retry'),'');
+ }
+});
 test('first page uses visible-message limit and resumes SSE after hidden terminal events',async()=>{
  const c=fixture();let url;c.api=async u=>{url=u;return response([{eventSeq:151,type:'ASSISTANT_MESSAGE_DELTA',turnId:'turn',messageId:'assistant:151',payload:{text:'complete'}}])};
  await c.loadStarweaveSnapshot();assert.match(url,/limit=50/);assert.ok(!url.includes('after=0'));assert.equal(c.starSessions.lastSeq,200);assert.equal(c.starSessions.events.length,1);assert.equal(c.starSessions.history.cursor,'cursor');
