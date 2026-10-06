@@ -67,7 +67,8 @@ public final class AcpSyncRobotsHeartbeat implements AutoCloseable {
         try {
             publisher.accept(snapshot.resultMap());
         } catch (RuntimeException e) {
-            logger.warn("acpSyncRobots heartbeat 发布失败", e);
+            logger.info("acpSyncRobots heartbeat 未完成，等待下一轮，原因={}",
+                    e.getClass().getSimpleName());
         }
     }
 

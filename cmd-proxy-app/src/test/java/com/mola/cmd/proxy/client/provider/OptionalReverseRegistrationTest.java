@@ -5,8 +5,10 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.AppenderBase;
 import com.mola.cmd.proxy.client.CmdProxyInvokeService;
+import com.mola.cmd.proxy.client.CmdProxyCallbackService;
 import com.mola.cmd.proxy.client.param.CmdInvokeParam;
 import com.mola.cmd.proxy.client.resp.CmdInvokeResponse;
+import com.mola.cmd.proxy.client.resp.CmdResponseContent;
 import com.mola.rpc.common.entity.RpcMetaData;
 import com.mola.rpc.common.interceptor.ReverseProxyRegisterInterceptor;
 import com.mola.rpc.core.properties.RpcProperties;
@@ -76,6 +78,7 @@ public class OptionalReverseRegistrationTest {
         assertTrue(registration.intercept(meta));
         CountDownLatch drained = drainWorker();
         assertTrue(drained.await(5, TimeUnit.SECONDS));
+        assertFalse(registration.tryCallback("acpSyncRobots", "acpSyncRobots", discovery(), 100));
         long retryAt = field("nextAttemptNanos").getLong(registration);
         assertTrue(retryAt != 0);
         for (int i = 0; i < 100; i++) assertTrue(registration.intercept(meta));
@@ -120,8 +123,21 @@ public class OptionalReverseRegistrationTest {
                                             return;
                                         }
                                         assertTrue(request.crc32Check());
-                                        assertTrue(request.isOnewayInvoke());
                                         InvokeMethod method = InvokeMethod.newInstance((String) BytesUtil.bytesToObject(request.getBody()));
+                                        if ("callback".equals(method.getMethodName())) {
+                                            assertFalse(request.isOnewayInvoke());
+                                            assertEquals("acpSyncRobots", method.getGroup());
+                                            CmdResponseContent payload = (CmdResponseContent) BytesUtil.bytesToObject(
+                                                    method.getSerializedArguments()[1], CmdResponseContent.class);
+                                            assertEquals("[]", payload.getResultMap().get("robots"));
+                                            String name = (String) BytesUtil.bytesToObject(method.getSerializedArguments()[0], String.class);
+                                            if ("timeout".equals(name)) return;
+                                            if ("disconnect".equals(name)) { ctx.close(); return; }
+                                            ctx.writeAndFlush(RemotingCommand.build(request, null,
+                                                    "reject".equals(name) ? -1 : 1, null));
+                                            return;
+                                        }
+                                        assertTrue(request.isOnewayInvoke());
                                         assertEquals("register", method.getMethodName());
                                         RpcMetaData received = (RpcMetaData) BytesUtil.bytesToObject(method.getSerializedArguments()[0], RpcMetaData.class);
                                         assertEquals(meta.getGroup(), received.getGroup());
@@ -146,9 +162,28 @@ public class OptionalReverseRegistrationTest {
             assertTrue("MolaChat must still be able to call the provider", response.await(5, TimeUnit.SECONDS));
             assertTrue("protocol errors: " + errors, errors.isEmpty());
             assertNotNull(factory.getNettyConnectPool().getChannel(address));
-            accepted.get().close().sync();
+            assertTrue(registration.tryCallback("acpSyncRobots", "acpSyncRobots", discovery(), 3000));
+            assertFalse(registration.tryCallback("reject", "acpSyncRobots", discovery(), 3000));
+            assertFalse(registration.tryCallback("timeout", "acpSyncRobots", discovery(), 100));
+            assertFalse(registration.tryCallback("disconnect", "acpSyncRobots", discovery(), 3000));
             assertTrue("lost connections must automatically register again",
                     registeredAgain.await(5, TimeUnit.SECONDS));
+            assertTrue("discovery callbacks must resume after reconnect",
+                    registration.tryCallback("acpSyncRobots", "acpSyncRobots", discovery(), 3000));
+            InvokeMethod ordinary = new InvokeMethod("callback",
+                    new String[]{String.class.getName(), CmdResponseContent.class.getName()},
+                    new Object[]{"ordinary", discovery()}, "void", CmdProxyCallbackService.class.getName());
+            ordinary.setGroup("acpSyncRobots"); ordinary.setVersion(meta.getVersion());
+            RemotingCommand ordinaryRequest = new RemotingCommand();
+            ordinaryRequest.setBody(BytesUtil.objectToBytes(ordinary.toString()));
+            assertEquals("ordinary RPC responses must still reach the shared client", 1,
+                    factory.getNettyRemoteClient().syncInvokeWithChannel(
+                            factory.getNettyConnectPool().getChannel(address), ordinaryRequest, ordinary,
+                            CmdProxyCallbackService.class.getMethod("callback", String.class, CmdResponseContent.class),
+                            3000).getCode());
+            assertTrue("callback protocol errors: " + errors, errors.isEmpty());
+            assertTrue(((java.util.Map<?, ?>) field("pendingCallbacks").get(registration)).isEmpty());
+            assertEquals(16, ((java.util.concurrent.Semaphore) field("callbackSlots").get(registration)).availablePermits());
             assertTrue("offline/recovery must be quiet: " + warnings, warnings.isEmpty());
         } finally {
             registration.close();
@@ -203,6 +238,10 @@ public class OptionalReverseRegistrationTest {
         provider.setProviderObject((CmdProxyInvokeService) parameter -> CmdInvokeResponse.Companion.success());
         factory.getRpcContext().getProviderMetaMap().put(provider.fetchReverseServiceKey(), provider);
         return provider;
+    }
+
+    private CmdResponseContent discovery() {
+        return new CmdResponseContent("discovery-test", java.util.Collections.singletonMap("robots", "[]"));
     }
 
     private Field field(String name) throws Exception {

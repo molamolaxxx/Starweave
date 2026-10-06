@@ -147,6 +147,10 @@ object CmdReceiver {
 
     fun hasCallbackConsumer(cmdGroup: String): Boolean = callbackConsumerMapByGroup.containsKey(cmdGroup)
 
+    /** Optional integration notifications do not initiate ordinary RPC connection retries. */
+    fun callbackOptional(cmdName: String, cmdGroup: String, response: CmdResponseContent): Boolean =
+        OptionalReverseRegistration.tryInstalledCallback(cmdName, cmdGroup, response)
+
     fun callback(cmdName: String, cmdGroup: String, response: CmdResponseContent) {
         val cmdProxyCallbackService = callbackConsumerMapByGroup[cmdGroup]
         if (cmdProxyCallbackService == null) {

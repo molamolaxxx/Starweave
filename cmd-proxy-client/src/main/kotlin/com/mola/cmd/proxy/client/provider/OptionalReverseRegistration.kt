@@ -1,6 +1,8 @@
 package com.mola.cmd.proxy.client.provider
 
 import com.mola.cmd.proxy.client.CmdProxyInvokeService
+import com.mola.cmd.proxy.client.CmdProxyCallbackService
+import com.mola.cmd.proxy.client.resp.CmdResponseContent
 import com.mola.rpc.common.entity.RpcMetaData
 import com.mola.rpc.common.interceptor.ReverseProxyRegisterInterceptor
 import com.mola.rpc.core.proto.ProtoRpcConfigFactory
@@ -11,6 +13,7 @@ import com.mola.rpc.core.remoting.handler.NettyRpcRequestHandler
 import com.mola.rpc.core.remoting.handler.NettyRpcResponseHandler
 import com.mola.rpc.core.remoting.netty.pool.ChannelFutureWrapper
 import com.mola.rpc.core.remoting.protocol.RemotingCommand
+import com.mola.rpc.core.remoting.protocol.RemotingCommandCode
 import com.mola.rpc.core.system.SystemConsumer
 import com.mola.rpc.core.util.BytesUtil
 import com.mola.rpc.core.util.RemotingHelper
@@ -22,6 +25,9 @@ import io.netty.channel.socket.nio.NioSocketChannel
 import io.netty.util.concurrent.DefaultEventExecutorGroup
 import org.slf4j.LoggerFactory
 import java.util.concurrent.Executors
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -44,6 +50,9 @@ class OptionalReverseRegistration @JvmOverloads constructor(
         Thread(task, "optional-molachat-callback").apply { isDaemon = true }
     })
     @Volatile private var channel: Channel? = null
+    private class PendingCallback(val channel: Channel, val reply: CompletableFuture<RemotingCommand>)
+    private val pendingCallbacks = ConcurrentHashMap<Int, PendingCallback>()
+    private val callbackSlots = Semaphore(16)
     private var nextAttemptNanos = 0L
     private val bootstrap = Bootstrap().group(io).channel(NioSocketChannel::class.java)
         .option(ChannelOption.TCP_NODELAY, true)
@@ -55,12 +64,25 @@ class OptionalReverseRegistration @JvmOverloads constructor(
                     object : ChannelDuplexHandler() {
                         override fun channelInactive(ctx: ChannelHandlerContext) {
                             removeFromPool(ctx.channel())
+                            failCallbacks(ctx.channel())
                             log.debug("optional MolaChat connection closed: {}", address)
                             ctx.fireChannelInactive()
                         }
                         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
                             log.debug("optional MolaChat connection unavailable: {}", address, cause)
                             ctx.close()
+                        }
+                        override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
+                            if (msg is RemotingCommand && msg.isResponseType) {
+                                val pending = pendingCallbacks[msg.opaque]
+                                if (pending != null && pending.channel === ctx.channel()
+                                    && pendingCallbacks.remove(msg.opaque, pending)) {
+                                    if (msg.crc32Check()) pending.reply.complete(msg)
+                                    else pending.reply.completeExceptionally(IllegalStateException("invalid callback response"))
+                                    return
+                                }
+                            }
+                            ctx.fireChannelRead(msg)
                         }
                     },
                     NettyRpcRequestHandler(factory.rpcContext) { meta -> meta.providerObject }, response)
@@ -99,6 +121,45 @@ class OptionalReverseRegistration @JvmOverloads constructor(
 
     // Preserve earlier availability/policy interceptors before replacing the transport.
     override fun priority(): Int = Int.MAX_VALUE
+
+    /** Best-effort discovery callback; never starts the ordinary RPC client's retry path. */
+    @JvmOverloads
+    fun tryCallback(cmdName: String, group: String, content: CmdResponseContent, timeoutMillis: Long = 3000): Boolean {
+        require(timeoutMillis > 0)
+        val connected = channel ?: return false
+        if (closed.get() || !connected.isActive || !connected.isWritable || !callbackSlots.tryAcquire()) return false
+        var request: RemotingCommand? = null
+        try {
+            val method = InvokeMethod("callback", arrayOf(String::class.java.name, CmdResponseContent::class.java.name),
+                arrayOf<Any>(cmdName, content), "void", CmdProxyCallbackService::class.java.name)
+            method.group = group
+            method.version = RpcMetaData().version
+            request = RemotingCommand().apply { body = BytesUtil.objectToBytes(method.toString()) }
+            val pending = PendingCallback(connected, CompletableFuture())
+            pendingCallbacks[request.opaque] = pending
+            connected.writeAndFlush(request).addListener { future ->
+                if (!future.isSuccess) pending.reply.completeExceptionally(
+                    future.cause() ?: IllegalStateException("callback write failed"))
+            }
+            return pending.reply.get(timeoutMillis, TimeUnit.MILLISECONDS).code == RemotingCommandCode.SUCCESS
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return false
+        } catch (e: Exception) {
+            return false
+        } finally {
+            request?.let { pendingCallbacks.remove(it.opaque) }
+            callbackSlots.release()
+        }
+    }
+
+    private fun failCallbacks(disconnected: Channel) {
+        pendingCallbacks.forEach { id, pending ->
+            if (pending.channel === disconnected && pendingCallbacks.remove(id, pending)) {
+                pending.reply.completeExceptionally(IllegalStateException("MolaChat disconnected"))
+            }
+        }
+    }
 
     private fun refresh() {
         if (closed.get()) return
@@ -170,13 +231,17 @@ class OptionalReverseRegistration @JvmOverloads constructor(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         worker.shutdownNow()
-        channel?.let { removeFromPool(it); it.close() }
+        channel?.let { failCallbacks(it); removeFromPool(it); it.close() }
         callbacks.shutdownGracefully()
         io.shutdownGracefully()
     }
 
     companion object {
-        private var installed: OptionalReverseRegistration? = null
+        @Volatile private var installed: OptionalReverseRegistration? = null
+
+        @JvmStatic
+        fun tryInstalledCallback(cmdName: String, group: String, content: CmdResponseContent): Boolean =
+            installed?.tryCallback(cmdName, group, content) ?: false
 
         @JvmStatic @Synchronized
         fun install(factory: ProtoRpcConfigFactory, address: String) {

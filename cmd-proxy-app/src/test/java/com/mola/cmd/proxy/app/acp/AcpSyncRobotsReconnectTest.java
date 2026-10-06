@@ -8,6 +8,11 @@ import com.mola.cmd.proxy.app.acp.team.TeamStore;
 import com.mola.cmd.proxy.app.acp.team.protocol.TeamTransportDescriptor;
 import com.mola.cmd.proxy.app.acp.team.protocol.TeamTransportProtocol;
 import org.junit.Test;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.util.HashSet;
@@ -22,6 +27,33 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class AcpSyncRobotsReconnectTest {
+
+    @Test
+    public void failedHeartbeatLogsOneInfoWithoutStackAndNextPublishStillRuns() {
+        AcpSyncRobotsSnapshot snapshot = new AcpSyncRobotsSnapshot(
+                "[]", "[]", TeamTransportDescriptor.readyForBusiness("instance-info-test"));
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        Logger logger = (Logger) LoggerFactory.getLogger(AcpSyncRobotsHeartbeat.class);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        AcpSyncRobotsHeartbeat heartbeat = new AcpSyncRobotsHeartbeat(snapshot, ignored -> {
+            if (calls.incrementAndGet() == 1) throw new RuntimeException("simulated offline");
+        }, 1, TimeUnit.DAYS);
+        try {
+            heartbeat.start();
+            heartbeat.publishOnce();
+            heartbeat.publishOnce();
+            assertEquals(2, calls.get());
+            assertEquals(1, logs.list.size());
+            assertEquals(Level.INFO, logs.list.get(0).getLevel());
+            org.junit.Assert.assertNull(logs.list.get(0).getThrowableProxy());
+        } finally {
+            heartbeat.close();
+            logger.detachAppender(logs);
+            logs.stop();
+        }
+    }
 
     @Test
     public void newMolaChatConnectionGetsCompleteReadyDiscoveryFromSyncHandshake() {

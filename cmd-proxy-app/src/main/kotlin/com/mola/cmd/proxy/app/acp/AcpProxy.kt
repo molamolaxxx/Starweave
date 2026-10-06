@@ -485,10 +485,9 @@ object AcpProxy {
         // MolaChat chatterId，仍是 Mixed Team participant，必须持续向协调器续租。
         if (!robotsJson.isNullOrBlank() && !chatterIdsJson.isNullOrBlank()) {
             try {
-                publishAcpSyncRobots()
-                log.info("acpSyncRobots 回调已发送")
+                if (publishAcpSyncRobots()) log.info("acpSyncRobots 回调已发送")
             } catch (e: Exception) {
-                log.error("acpSyncRobots 回调发送失败", e)
+                log.info("acpSyncRobots 回调未完成，等待下一轮，原因={}", e.javaClass.simpleName)
             }
         }
         acpSyncRobotsHeartbeat = AcpSyncRobotsHeartbeat(
@@ -504,18 +503,18 @@ object AcpProxy {
     }
 
     /** 发布与主动握手完全相同的权威快照。 */
-    private fun publishAcpSyncRobots() {
-        publishAcpSyncRobots(acpSyncRobotsSnapshot.resultMap())
-    }
+    private fun publishAcpSyncRobots(): Boolean = publishAcpSyncRobots(acpSyncRobotsSnapshot.resultMap())
 
-    private fun publishAcpSyncRobots(snapshot: Map<String, String>) {
-        CmdReceiver.callback(
+    private fun publishAcpSyncRobots(snapshot: Map<String, String>): Boolean {
+        val sent = CmdReceiver.callbackOptional(
             "acpSyncRobots", "acpSyncRobots",
             CmdResponseContent(
                 UUID.randomUUID().toString(),
                 snapshot
             )
         )
+        if (!sent) log.info("acpSyncRobots 心跳未发送：MolaChat 未连接或回调未确认，等待下一轮")
+        return sent
     }
 
     /** 注册实例级稳定 transport，并仅在权威状态恢复成功后开放业务命令。 */
