@@ -412,6 +412,7 @@ public final class MixedTeamCoordinator {
                 if (!instance.equals(global.getString("cmdProxyInstanceId"))) throw new CoordinationException("UNAUTHORIZED", "成员位置不匹配");
                 for (String key : Arrays.asList("state", "status", "sessionId", "clientState", "lastError"))
                     if (local.containsKey(key)) global.put(key, local.get(key));
+                if (local.getString("state") != null) global.put("status", local.getString("state"));
             }
             updateState(record);
         });
@@ -477,6 +478,10 @@ public final class MixedTeamCoordinator {
         JSONObject view = copy(record);
         for (String key : Arrays.asList("payloadHash", "participants", "requestId", "deleteRequestId")) view.remove(key);
         view.put("status", record.getString("state")); view.put("coordinated", true);
+        for (Object value : array(view, "members")) {
+            JSONObject member = (JSONObject) value;
+            if (member.getString("state") != null) member.put("status", member.getString("state"));
+        }
         return view;
     }
     private static JSONObject sourceView(JSONObject source, String instance, JSONObject descriptor, String home, String owner) {

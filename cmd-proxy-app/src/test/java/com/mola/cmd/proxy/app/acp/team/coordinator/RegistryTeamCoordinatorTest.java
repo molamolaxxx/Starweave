@@ -11,10 +11,78 @@ import java.net.*;
 import java.io.*;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.*;
 import static org.junit.Assert.*;
 
 public class RegistryTeamCoordinatorTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
+    @Test public void realtimeAndDurableCallbacksShareMemberOrderWithoutBlockingAnotherMember() throws Exception {
+        Path root = temporary.newFolder().toPath();
+        RegistryManager registry = new RegistryManager(root.resolve("registry"), 12345, "fixture");
+        CountDownLatch firstEntered = new CountDownLatch(1), release = new CountDownLatch(1);
+        CountDownLatch otherDelivered = new CountDownLatch(1), completeDelivered = new CountDownLatch(1);
+        List<String> order = Collections.synchronizedList(new ArrayList<>());
+        RegistryTeamCoordinator service = new RegistryTeamCoordinator(registry, root.resolve("coordination"), (owner, event) -> {
+            String id = event.getString("eventId");
+            if ("first".equals(id)) {
+                firstEntered.countDown();
+                try { if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("release timeout"); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
+            }
+            order.add(id);
+            if ("other".equals(id)) otherDelivered.countDown();
+            if ("end".equals(id)) completeDelivered.countDown();
+        });
+        try {
+            assertTrue(service.enqueueClientProjection("user", projectionEvent("first", "m1", "MESSAGE_CHUNK"), false));
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(service.enqueueClientProjection("user", projectionEvent("end", "m1", "MESSAGE_COMPLETE"), true));
+            assertTrue(service.enqueueClientProjection("user", projectionEvent("other", "m2", "MESSAGE_CHUNK"), false));
+            assertTrue(otherDelivered.await(5, TimeUnit.SECONDS));
+            assertFalse(order.contains("end")); release.countDown();
+            assertTrue(completeDelivered.await(5, TimeUnit.SECONDS));
+            assertTrue(order.indexOf("first") < order.indexOf("end"));
+            service.close();
+            assertFalse(service.enqueueClientProjection("user", projectionEvent("closed", "m1", "MESSAGE_CHUNK"), false));
+        } finally { release.countDown(); service.close(); registry.close(); }
+    }
+    @Test public void fullMessageSnapshotsDoNotDelayLegacyIncrementalCallbacks() throws Exception {
+        Path root = temporary.newFolder().toPath();
+        RegistryManager registry = new RegistryManager(root.resolve("registry"), 12345, "fixture");
+        List<String> delivered = Collections.synchronizedList(new ArrayList<>());
+        CountDownLatch chunk = new CountDownLatch(1);
+        RegistryTeamCoordinator service = new RegistryTeamCoordinator(registry, root.resolve("coordination"), (owner, event) -> {
+            delivered.add(event.getString("type")); chunk.countDown();
+        });
+        try {
+            assertTrue(service.enqueueClientProjection("user", projectionEvent("snapshot", "m1", "MESSAGE_UPDATED"), false));
+            assertTrue(service.enqueueClientProjection("user", projectionEvent("chunk", "m1", "MESSAGE_CHUNK"), false));
+            assertTrue(chunk.await(5, TimeUnit.SECONDS));
+            assertEquals(Collections.singletonList("MESSAGE_CHUNK"), delivered);
+        } finally { service.close(); registry.close(); }
+    }
+    private JSONObject projectionEvent(String id, String member, String type) {
+        JSONObject event = MixedTeamCoordinator.object("eventId", id, "type", type);
+        event.put("teamId", "team"); event.put("teamMemberId", member); return event;
+    }
+    @Test public void fullMemberQueueRejectsAdmissionWithoutBlockingProducer() throws Exception {
+        Path root = temporary.newFolder().toPath();
+        RegistryManager registry = new RegistryManager(root.resolve("registry"), 12345, "fixture");
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        RegistryTeamCoordinator service = new RegistryTeamCoordinator(registry, root.resolve("coordination"), (owner, event) -> {
+            entered.countDown();
+            try { release.await(5, TimeUnit.SECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        try {
+            assertTrue(service.enqueueClientProjection("user", projectionEvent("running", "m1", "MESSAGE_CHUNK"), false));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            for (int i = 0; i < 256; i++)
+                assertTrue(service.enqueueClientProjection("user", projectionEvent("queued-" + i, "m1", "MESSAGE_CHUNK"), false));
+            assertFalse(service.enqueueClientProjection("user", projectionEvent("overflow", "m1", "MESSAGE_CHUNK"), false));
+        } finally { release.countDown(); service.close(); registry.close(); }
+    }
     @Test public void retiredOrSpoofedRealtimeFrameIsDiscardedWithoutBlockingFollowingTeams() throws Exception {
         Path root = temporary.newFolder().toPath();
         RegistryManager registry = new RegistryManager(root.resolve("registry"), 12345, "fixture");

@@ -34,12 +34,28 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
     private volatile boolean closed;
     private final Map<String, Object> participantLocks = new ConcurrentHashMap<>();
     private final Map<String, JSONObject> bindings = new ConcurrentHashMap<>();
-    private final ThreadPoolExecutor realtimeClientProjector = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
-            new ArrayBlockingQueue<>(64), r -> { Thread t = new Thread(r, "registry-team-client-realtime"); t.setDaemon(true); return t; });
+    private final ThreadPoolExecutor[] clientDelivery = new ThreadPoolExecutor[4];
+    private final Set<String> pendingClientDeliveries = ConcurrentHashMap.newKeySet();
+    private final TeamStreamProjection streamProjection;
+    private final java.util.function.BiConsumer<String, JSONObject> clientSender;
     private final java.util.concurrent.atomic.AtomicInteger clientProjectionBytes = new java.util.concurrent.atomic.AtomicInteger();
     public RegistryTeamCoordinator(RegistryManager registry, Path directory) {
+        this(registry, directory, (owner, event) -> TeamCoordinationBridge.project(registry.localInstanceId(), owner, event));
+    }
+    RegistryTeamCoordinator(RegistryManager registry, Path directory,
+                            java.util.function.BiConsumer<String, JSONObject> clientSender) {
         this.registry = registry; this.store = new CoordinationStore(directory);
+        this.clientSender = clientSender;
         this.coordinator = new MixedTeamCoordinator(store, this);
+        this.streamProjection = new TeamStreamProjection(store);
+        for (int i = 0; i < clientDelivery.length; i++) {
+            final int stripe = i;
+            clientDelivery[i] = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<>(256), r -> {
+                        Thread t = new Thread(r, "registry-team-client-delivery-" + stripe);
+                        t.setDaemon(true); return t;
+                    });
+        }
     }
     public void start() {
         TeamCoordinationBridge.installService(this);
@@ -100,6 +116,8 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
     public boolean capture(JSONObject event) {
         String teamId = event.getString("teamId");
         if (teamId == null || binding(teamId) == null) return false;
+        if (!StarweaveIdentity.ownerId(binding(teamId).getString("homeInstanceId"))
+                .equals(binding(teamId).getString("ownerChatterId"))) streamProjection.capture(event);
         if (isRealtimeEvent(event)) {
             boolean accepted = registry.isCenterEnabled() ? routeRealtime(registry.localInstanceId(), event)
                     : registry.sendTeamRealtime(null, MixedTeamCoordinator.object("operation", "event", "payload", event));
@@ -257,16 +275,36 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
         // Optional MolaChat callbacks cannot block a participant's real-time TLS channel.
         // An offline client reconstructs display from authoritative session history on reconnect.
         if (!com.mola.cmd.proxy.client.provider.CmdReceiver.INSTANCE.hasCallbackConsumer("team-acp-" + registry.localInstanceId())) return true;
+        return enqueueClientProjection(owner, event, false);
+    }
+    boolean enqueueClientProjection(String owner, JSONObject event, boolean durable) {
+        // MolaChat consumes incremental stream events, not Starweave's full-message
+        // revision snapshots. Sending both doubles callback work and delays chunks.
+        if ("MESSAGE_UPDATED".equals(event.getString("type"))) return true;
+        String id = event.getString("eventId");
+        if (!pendingClientDeliveries.add(id)) return true;
         int bytes = event.toJSONString().getBytes(StandardCharsets.UTF_8).length;
-        if (clientProjectionBytes.addAndGet(bytes) > 32 * 1024 * 1024) { clientProjectionBytes.addAndGet(-bytes); return false; }
+        if (clientProjectionBytes.addAndGet(bytes) > 32 * 1024 * 1024) {
+            clientProjectionBytes.addAndGet(-bytes); pendingClientDeliveries.remove(id); return false;
+        }
         try {
-            realtimeClientProjector.execute(() -> {
-                try { TeamCoordinationBridge.project(registry.localInstanceId(), owner, event); }
+            String key = event.getString("teamId") + ":" + event.getString("teamMemberId");
+            clientDelivery[(key.hashCode() & Integer.MAX_VALUE) % clientDelivery.length].execute(() -> {
+                try {
+                    streamProjection.project(event, projected ->
+                            clientSender.accept(owner, projected));
+                    if (durable) {
+                        store.save("projection-receipts", id, MixedTeamCoordinator.object("timestamp", System.currentTimeMillis()));
+                        store.delete("projections", id);
+                    }
+                }
                 catch (RuntimeException unavailable) { org.slf4j.LoggerFactory.getLogger(getClass()).debug("实时客户端投影已断开: {}", unavailable.getMessage()); }
-                finally { clientProjectionBytes.addAndGet(-bytes); }
+                finally { clientProjectionBytes.addAndGet(-bytes); pendingClientDeliveries.remove(id); }
             });
             return true;
-        } catch (RejectedExecutionException full) { clientProjectionBytes.addAndGet(-bytes); return false; }
+        } catch (RejectedExecutionException full) {
+            clientProjectionBytes.addAndGet(-bytes); pendingClientDeliveries.remove(id); return false;
+        }
     }
     private void projectClientsSafely() {
         if (closed) return;
@@ -276,9 +314,7 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
                     store.delete("projections", pending.getString("eventId")); continue;
                 }
                 String owner = pending.getString("projectionOwner"); pending.remove("projectionOwner");
-                TeamCoordinationBridge.project(registry.localInstanceId(), owner, pending);
-                store.save("projection-receipts", pending.getString("eventId"), MixedTeamCoordinator.object("timestamp", System.currentTimeMillis()));
-                store.delete("projections", pending.getString("eventId"));
+                if (!enqueueClientProjection(owner, pending, true)) break;
             }
         } catch (RuntimeException retryOnReconnect) { /* Durable client projection is retried on reconnect. */ }
     }
@@ -365,7 +401,7 @@ public final class RegistryTeamCoordinator implements AutoCloseable, MixedTeamCo
     @Override public void close() {
         closed = true; TeamCoordinationBridge.clearService(this); worker.shutdownNow(); clientProjector.shutdownNow();
         registry.teamRealtimeReceiver(null);
-        realtimeClientProjector.shutdownNow();
+        for (ThreadPoolExecutor delivery : clientDelivery) delivery.shutdownNow();
         http.dispatcher().cancelAll(); http.connectionPool().evictAll(); http.dispatcher().executorService().shutdownNow();
     }
 }

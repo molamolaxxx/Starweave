@@ -32,6 +32,41 @@ public class MixedTeamCoordinatorTest {
         assertEquals(1, transport.creates.get(0).getJSONArray("members").size());
         assertEquals(2, transport.creates.get(0).getJSONArray("roster").size());
         assertEquals("user", transport.creates.get(1).getString("ownerChatterId"));
+        for (Object value : team.getJSONArray("members")) {
+            JSONObject member = (JSONObject) value;
+            assertEquals(member.getString("state"), member.getString("status"));
+        }
+    }
+
+    @Test public void existingStaleStatusIsNormalizedWithoutRecreatingTeam() {
+        coordinator.execute("user", "a", "create", request());
+        JSONObject record = store.find("teams", "t1");
+        for (Object value : record.getJSONArray("members")) {
+            JSONObject member = (JSONObject) value;
+            member.put("state", "READY"); member.put("status", "STARTING");
+        }
+        store.save("teams", "t1", record);
+        JSONObject team = coordinator.execute("user", "a", "list", new JSONObject()).getJSONArray("teams").getJSONObject(0);
+        for (Object value : team.getJSONArray("members")) {
+            JSONObject member = (JSONObject) value;
+            assertEquals("READY", member.getString("status"));
+        }
+        assertEquals(2, transport.creates.size());
+    }
+    @Test public void participantStateChangesUpdatePersistedAndProjectedMemberStatus() {
+        coordinator.execute("user", "a", "create", request());
+        JSONObject fragment = MixedTeamCoordinator.copy(transport.fragments.get("a"));
+        fragment.put("version", 4L);
+        JSONObject member = fragment.getJSONArray("members").getJSONObject(0);
+        member.put("state", "BUSY"); member.remove("status");
+        JSONObject changed = event("state-change", "MEMBER_STATE_CHANGED");
+        changed.put("data", object("team", fragment));
+        coordinator.acceptEvent("a", changed); coordinator.drainEvents();
+        JSONObject saved = store.find("teams", "t1").getJSONArray("members").getJSONObject(0);
+        assertEquals("BUSY", saved.getString("state")); assertEquals("BUSY", saved.getString("status"));
+        JSONObject projected = transport.projected.get(transport.projected.size() - 1)
+                .getJSONObject("data").getJSONObject("team").getJSONArray("members").getJSONObject(0);
+        assertEquals("BUSY", projected.getString("status"));
     }
 
     @Test public void retriesSameCreateWithoutCreatingAgainAndRejectsConflictingPayload() {
