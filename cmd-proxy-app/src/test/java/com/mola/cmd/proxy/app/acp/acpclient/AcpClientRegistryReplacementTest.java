@@ -17,6 +17,25 @@ import static org.junit.Assert.*;
 public class AcpClientRegistryReplacementTest {
 
     @Test
+    public void newSessionReplacesSleepingClientButRejectsBusyClient() throws Exception {
+        FakeFactory factory = new FakeFactory();
+        AcpClientRegistry registry = new AcpClientRegistry(factory);
+        try {
+            FakeClient current = (FakeClient) registry.createSession(identity(), ".", robot("Robot"), true, null);
+            current.state.set(AbstractAcpClient.State.BUSY);
+            assertNull(registry.replaceSessionIfCurrent("group", current, null, null));
+            assertFalse(current.closed);
+            current.state.set(AbstractAcpClient.State.SLEEP);
+            AcpClient replacement = registry.replaceSessionIfCurrent("group", current, null, null);
+            assertNotNull(replacement);
+            assertTrue(current.closed);
+            assertEquals(2, factory.created.size());
+        } finally {
+            registry.closeAllForShutdown();
+        }
+    }
+
+    @Test
     public void failedReplacementKeepsCurrentClientPublishedAndOpen() throws Exception {
         FakeFactory factory = new FakeFactory();
         AcpClientRegistry registry = new AcpClientRegistry(factory);

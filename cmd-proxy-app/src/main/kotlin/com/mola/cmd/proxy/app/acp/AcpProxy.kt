@@ -1033,11 +1033,9 @@ object AcpProxy {
                     return@register resultMap
                 }
                 val client = registry.getClient(groupId)
-                if (client?.state == AbstractAcpClient.State.SLEEP) {
-                    registry.wakeIfSleeping(groupId)
-                }
-                if (client == null || client.state != AbstractAcpClient.State.READY) {
-                    resultMap["result"] = "当前client状态不为READY，不允许清除上下文"
+                if (client == null || (client.state != AbstractAcpClient.State.READY
+                        && client.state != AbstractAcpClient.State.SLEEP)) {
+                    resultMap["result"] = "当前client状态不为READY或SLEEP，不允许清除上下文"
                     return@register resultMap
                 }
 

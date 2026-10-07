@@ -167,6 +167,8 @@ public class AcpClientRegistry {
             AcpClient current = clients.get(groupId);
             if (current == null || current != expected
                     || (current.getState() != AbstractAcpClient.State.READY
+                    && !(targetRestoreSessionId == null
+                    && current.getState() == AbstractAcpClient.State.SLEEP)
                     && current.getState() != AbstractAcpClient.State.STARTING)) {
                 return null;
             }

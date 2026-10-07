@@ -2982,11 +2982,24 @@ public final class TeamManager implements AutoCloseable {
         }
         route.runtime.getOperationLock().lock();
         try {
-            AcpClient old = options.isForceNewSession()
+            AcpClient old;
+            if (options.isForceNewSession()
+                    && route.member.getState() == TeamMemberState.SLEEP) {
+                // The old runtime is being discarded; waking it would emit an
+                // orphan card and may rotate the session a second time.
+                old = requireExistingClient(route);
+                if (old.getState() != AbstractAcpClient.State.SLEEP
+                        && old.getState() != AbstractAcpClient.State.READY) {
+                    throw new MemberRouteException(TeamErrorCode.MEMBER_BUSY,
+                            "Team member is not READY or SLEEP");
+                }
+            } else {
+                old = options.isForceNewSession()
                     && route.member.getState() == TeamMemberState.ERROR
                     ? clientRegistry.get(route.team.getTeamId(),
                             route.member.getTeamMemberId()).orElse(null)
                     : requireReadyClient(route);
+            }
             publishMemberState(route.runtime, route.member.getTeamMemberId(),
                     com.mola.cmd.proxy.app.acp.team.model.TeamMemberState.STARTING, null);
             clientRegistry.remove(route.team.getTeamId(), route.member.getTeamMemberId());

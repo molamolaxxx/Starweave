@@ -39,6 +39,38 @@ public class StarweaveSessionManagerTest {
     public final TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
+    public void manualNewSessionReplacesExpiredSleepingClientWithoutWaking() throws Exception {
+        FakeFactory factory = new FakeFactory();
+        AcpClientRegistry registry = registry(factory);
+        try {
+            StarweaveSessionManager manager = manager(registry);
+            JSONObject opened = manager.open("Robot");
+            String groupId = opened.getString("groupId");
+            FakeClient old = (FakeClient) registry.getClient(groupId);
+            old.sleepWithExpiredSession();
+            JSONObject replaced = manager.newSession(groupId,
+                    opened.getString("sessionId"), opened.getLongValue("generation"));
+            assertEquals(0, old.wakeRotations);
+            assertTrue(old.closed);
+            assertNotEquals(opened.getString("sessionId"), replaced.getString("sessionId"));
+            assertEquals(opened.getLongValue("generation") + 1, replaced.getLongValue("generation"));
+            JSONObject batch = manager.eventBatch(groupId, replaced.getString("sessionId"), 0L, null);
+            int rotations = 0;
+            for (Object value : batch.getJSONArray("events")) {
+                JSONObject event = (JSONObject) value;
+                assertNotEquals("LIFECYCLE_EVENT", event.getString("type"));
+                if ("SESSION_REPLACED".equals(event.getString("type"))) {
+                    rotations++;
+                    assertEquals("MANUAL", event.getJSONObject("payload").getString("reason"));
+                }
+            }
+            assertEquals(1, rotations);
+        } finally {
+            registry.closeAllForShutdown();
+        }
+    }
+
+    @Test
     public void lifecyclePreservesGenerationAndDeleteForcesNewOpen() throws Exception {
         FakeFactory factory = new FakeFactory();
         AcpClientRegistry registry = registry(factory);

@@ -37,6 +37,27 @@ public class TeamMemberCommandTest {
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void manualNewSessionReplacesSleepingMemberWithoutWaking() throws Exception {
+        Fixture fixture = fixture();
+        try {
+            TestClient old = fixture.current.get();
+            old.setClientState(AbstractAcpClient.State.SLEEP);
+            fixture.manager.onMemberState("team-1", "member-1", TeamMemberState.SLEEP, null);
+            fixture.events.clear();
+            Map<String, String> result = fixture.handler.handleNewSession("manual-new", one(basePayload()));
+            assertEquals("true", result.get("accepted"));
+            assertTrue(old.closed);
+            assertNotSame(old, fixture.current.get());
+            assertTrue(fixture.lastOptions.get().isForceNewSession());
+            assertFalse(fixture.events.stream().anyMatch(event ->
+                    Arrays.asList("LIFECYCLE_EVENT", "MEMBER_SESSION_CHANGED", "MESSAGE_CHUNK")
+                            .contains(event.getType().name())));
+        } finally {
+            fixture.manager.close();
+        }
+    }
+
+    @Test
     public void sendPreservesMultipleSameNamedAttachmentsForMemberClient()
             throws Exception {
         Fixture fixture = fixture();

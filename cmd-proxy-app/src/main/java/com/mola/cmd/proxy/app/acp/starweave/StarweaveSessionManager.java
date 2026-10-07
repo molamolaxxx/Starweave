@@ -355,7 +355,7 @@ public final class StarweaveSessionManager {
                                  long expectedGeneration) throws Exception {
         StarweaveSessionIndex.Entry entry = requireCurrent(
                 groupId, expectedSessionId, expectedGeneration);
-        AcpClient current = requireReadyClient(groupId);
+        AcpClient current = requireReadyClient(groupId, false);
         AcpClient replacement = sessionService.replaceIfCurrent(
                 groupId, current, null,
                 clientInitializer(groupId, current.getRobotParam()));
@@ -777,16 +777,22 @@ public final class StarweaveSessionManager {
     }
 
     private AcpClient requireReadyClient(String groupId) {
+        return requireReadyClient(groupId, true);
+    }
+
+    private AcpClient requireReadyClient(String groupId, boolean wakeSleeping) {
         AcpClient client = registry.getClient(groupId);
-        if (client != null && client.getState() == AbstractAcpClient.State.SLEEP) {
+        if (wakeSleeping && client != null && client.getState() == AbstractAcpClient.State.SLEEP) {
             try {
                 client.wakeIfSleeping();
             } catch (IOException e) {
                 throw new IllegalStateException("session wake failed", e);
             }
         }
-        if (client == null || client.getState() != AbstractAcpClient.State.READY) {
-            throw new IllegalStateException("session is not READY");
+        if (client == null || (client.getState() != AbstractAcpClient.State.READY
+                && (wakeSleeping || client.getState() != AbstractAcpClient.State.SLEEP))) {
+            throw new IllegalStateException(wakeSleeping
+                    ? "session is not READY" : "session is not READY or SLEEP");
         }
         if (!client.getClientIdentity().isStarweave()) {
             throw new IllegalStateException("session is not owned by Starweave");
