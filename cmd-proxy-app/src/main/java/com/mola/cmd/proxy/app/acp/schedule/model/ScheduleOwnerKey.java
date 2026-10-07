@@ -67,8 +67,8 @@ public final class ScheduleOwnerKey {
         if (surface == null || surface == ClientSurface.TEAM) {
             throw new IllegalArgumentException("invalid MAIN schedule surface");
         }
-        String safeOwner = requireSafeId(ownerId, "ownerId");
-        String safeLogical = requireSafeId(logicalId, "logicalId");
+        String safeOwner = requireSafeMainId(ownerId, surface, "ownerId");
+        String safeLogical = requireSafeMainId(logicalId, surface, "logicalId");
         String name = requireSafePathSegment(robotName, "robotName");
         String surfaceId = surface.name().toLowerCase(java.util.Locale.ROOT);
         return new ScheduleOwnerKey(Scope.MAIN, safeOwner, surface,
@@ -181,6 +181,22 @@ public final class ScheduleOwnerKey {
     private static String requireSafeId(String value, String field) {
         String text = requireText(value, field);
         if (!text.matches("[a-zA-Z0-9._-]+")
+                || ".".equals(text) || "..".equals(text)) {
+            throw new IllegalArgumentException(field + " is not safe");
+        }
+        return text;
+    }
+
+    private static String requireSafeMainId(String value, ClientSurface surface,
+                                             String field) {
+        if (surface != ClientSurface.MOLACHAT) {
+            return requireSafeId(value, field);
+        }
+        // MolaChat's established session IDs include the robot's display name.
+        // Preserve Unicode IDs for routing and persistence recovery while still
+        // excluding separators, traversal segments and platform-reserved symbols.
+        String text = requireText(value, field);
+        if (!text.matches("[\\p{L}\\p{M}\\p{N}._-]+")
                 || ".".equals(text) || "..".equals(text)) {
             throw new IllegalArgumentException(field + " is not safe");
         }

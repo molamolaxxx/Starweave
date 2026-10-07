@@ -35,6 +35,67 @@ public class ScheduleOwnerIsolationTest {
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void molaChatUnicodeIdsRetainRoutingIdentityAcrossPersistenceRecovery()
+            throws Exception {
+        Path root = temporaryFolder.newFolder("unicode-schedules").toPath();
+        ScheduleTaskManager manager = new ScheduleTaskManager(root);
+        for (String name : new String[]{"定时任务-MM", "定时任务-ML"}) {
+            String groupId = "1785566835011cSLOSacp-" + name;
+            ScheduleOwnerKey owner = ScheduleOwnerKey.main(
+                    groupId, ClientSurface.MOLACHAT, groupId, name);
+            assertEquals(groupId, owner.getOwnerId());
+            assertEquals(groupId, owner.getLogicalId());
+            ScheduleOwnerKey recovered = ScheduleOwnerKey.fromPersistencePath(
+                    owner.getPersistencePath());
+            assertEquals(owner, recovered);
+            assertEquals(groupId, recovered.getLogicalId());
+            manager.createTask(owner, name, "prompt", new ScheduleConfig("once", "+1h"));
+            assertTrue(Files.exists(root.resolve(owner.getPersistencePath()).resolve("tasks.json")));
+
+            // Existing MolaChat schedules keep their original robot-name directory.
+            ScheduleOwnerKey legacy = ScheduleOwnerKey.main(name);
+            manager.createTask(legacy, "legacy", "prompt", new ScheduleConfig("once", "+1h"));
+            assertEquals(name, legacy.getPersistencePath());
+            assertTrue(Files.exists(root.resolve(name).resolve("tasks.json")));
+        }
+        ScheduleTaskManager restored = new ScheduleTaskManager(root);
+        restored.start();
+        try {
+            for (String name : new String[]{"定时任务-MM", "定时任务-ML"}) {
+                String groupId = "1785566835011cSLOSacp-" + name;
+                ScheduleOwnerKey owner = ScheduleOwnerKey.main(
+                        groupId, ClientSurface.MOLACHAT, groupId, name);
+                assertEquals(1, restored.listTasks(owner).size());
+                assertEquals(groupId, restored.listTasks(owner).get(0).getOwner().getLogicalId());
+                assertEquals(1, restored.listTasks(ScheduleOwnerKey.main(name)).size());
+            }
+        } finally {
+            restored.stop();
+        }
+    }
+
+    @Test
+    public void unicodeMolaChatIdsStillRejectUnsafePathSegments() {
+        for (String invalid : new String[]{"..", ".", "用户/机器人", "用户\\机器人", "C:机器人"}) {
+            for (boolean invalidOwner : new boolean[]{true, false}) {
+                try {
+                    ScheduleOwnerKey.main(invalidOwner ? invalid : "用户",
+                            ClientSurface.MOLACHAT, invalidOwner ? "会话" : invalid, "机器人");
+                    fail("Accepted unsafe ID: " + invalid);
+                } catch (IllegalArgumentException expected) {
+                    assertTrue(expected.getMessage().contains("is not safe"));
+                }
+            }
+        }
+        try {
+            ScheduleOwnerKey.main("starweave-instance", ClientSurface.STARWEAVE, "中文", "机器人");
+            fail("Starweave logical IDs must retain their transport-safe validation");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("logicalId is not safe"));
+        }
+    }
+
+    @Test
     public void scheduledTaskPersistsChannelNeutralPrincipalForDerivedExecution()
             throws Exception {
         Path root = temporaryFolder.newFolder("principal").toPath();

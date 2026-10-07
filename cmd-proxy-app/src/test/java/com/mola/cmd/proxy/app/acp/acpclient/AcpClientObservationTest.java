@@ -20,6 +20,35 @@ public class AcpClientObservationTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
+    public void chineseMolaChatClientsInitializeWithObservationEnabledOrDisabled() throws Exception {
+        try (ObservationManager manager =
+                new ObservationManager(temporary.newFolder("unicode-observations").toPath())) {
+            for (String name : new String[]{"定时任务-MM", "定时任务-ML"}) {
+                for (boolean enabled : new boolean[]{false, true}) {
+                    AcpRobotParam robot = new AcpRobotParam();
+                    robot.setName(name);
+                    robot.setObservationEnabled(enabled);
+                    String groupId = "1785566835011cSLOSacp-" + name;
+                    AcpClient client = createClient(groupId, robot);
+                    try {
+                        AcpClientIdentity identity = client.getClientIdentity();
+                        ScheduleOwnerKey owner = ScheduleOwnerKey.main(
+                                identity.getOwnerId() == null ? identity.getLogicalId() : identity.getOwnerId(),
+                                identity.getSurface(), identity.getLogicalId(), name);
+                        client.setObservationSupport(manager, owner, prompt -> false);
+                        assertEquals(groupId, owner.getLogicalId());
+                        assertEquals(enabled,
+                                client.availableActionTools().contains("manage_observation_channels"));
+                    } finally {
+                        client.close();
+                    }
+                }
+            }
+            assertEquals(0, manager.owners().getAsJsonArray("items").size());
+        }
+    }
+
+    @Test
     public void gatesToolsAndRejectsCallsFromOldDisabledSessions() throws Exception {
         AcpRobotParam robot = new AcpRobotParam();
         robot.setName("assistant");
