@@ -128,13 +128,21 @@ public class CodexAcpProvider implements AgentProvider {
     }
 
     @Override
+    public boolean supportsCompactionUpdates() {
+        return true;
+    }
+
+    @Override
     public CompactionSignal detectCompactionSignal(JsonObject msg) {
         if (!isSessionUpdate(msg)) {
             return CompactionSignal.NONE;
         }
 
         JsonObject update = msg.getAsJsonObject("params").getAsJsonObject("update");
-        if (isStructuredContextCompactionUpdate(update)) {
+        // codex-acp 2.1.1 negotiates session.compaction and emits dedicated updates
+        // without the legacy tool-call metadata. Keep older adapters supported.
+        if ("compaction_update".equals(getString(update, "sessionUpdate"))
+                || isStructuredContextCompactionUpdate(update)) {
             String status = getString(update, "status")
                     .toLowerCase(java.util.Locale.ROOT);
             if ("in_progress".equals(status) || "pending".equals(status)) {

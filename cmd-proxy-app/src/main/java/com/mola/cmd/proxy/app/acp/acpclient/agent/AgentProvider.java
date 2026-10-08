@@ -182,6 +182,11 @@ public interface AgentProvider {
         return CompactionSignal.NONE;
     }
 
+    /** Whether this client consumes the provider's dedicated ACP compaction updates. */
+    default boolean supportsCompactionUpdates() {
+        return false;
+    }
+
     /**
      * agent 的 skills 目录相对于 workspacePath 的路径。
      * 如 kiro-cli 为 ".kiro/skills"，opencode 为 ".opencode/skills"。

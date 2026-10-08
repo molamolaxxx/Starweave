@@ -619,6 +619,9 @@ public abstract class AbstractAcpClient implements Closeable {
         JsonObject capabilities = new JsonObject();
         JsonObject sessionCapabilities = new JsonObject();
         sessionCapabilities.add("configOptions", new JsonObject());
+        if (agentProvider.supportsCompactionUpdates()) {
+            sessionCapabilities.add("compaction", new JsonObject());
+        }
         capabilities.add("session", sessionCapabilities);
         params.add("clientCapabilities", capabilities);
 

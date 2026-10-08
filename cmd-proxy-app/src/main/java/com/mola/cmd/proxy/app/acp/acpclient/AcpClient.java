@@ -1676,6 +1676,11 @@ public class AcpClient extends AbstractAcpClient {
                     contextUsagePercentage = (used / size) * 100;
                 }
             }
+        } else if (agentProvider.supportsCompactionUpdates()
+                && ("compaction_update".equals(updateType)
+                || "compaction_summary_chunk".equals(updateType))) {
+            // Lifecycle was handled by observeCompactionSignal. The provider's
+            // summary is internal context, not an assistant reply or tool card.
         } else if ("agent_thought_chunk".equals(updateType)) {
             // 不处理思考
         } else {

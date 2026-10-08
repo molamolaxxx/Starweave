@@ -71,6 +71,31 @@ public class CodexAcpProviderControlArtifactTest {
     }
 
     @Test
+    public void recognizesDedicatedCompactionLifecycleWithoutToolMetadata() {
+        CodexAcpProvider provider = new CodexAcpProvider();
+        assertTrue(provider.supportsCompactionUpdates());
+        String[] statuses = {"in_progress", "completed", "failed", "cancelled", "future_status"};
+        AgentProvider.CompactionSignal[] signals = {
+                AgentProvider.CompactionSignal.STARTED,
+                AgentProvider.CompactionSignal.COMPLETED,
+                AgentProvider.CompactionSignal.FAILED,
+                AgentProvider.CompactionSignal.FAILED,
+                AgentProvider.CompactionSignal.NONE};
+        for (int i = 0; i < statuses.length; i++) {
+            JsonObject message = compactionUpdate("compaction_update", statuses[i], false);
+            JsonObject update = message.getAsJsonObject("params").getAsJsonObject("update");
+            update.remove("toolCallId");
+            update.remove("kind");
+            update.remove("title");
+            update.addProperty("compactionId", "compact-1");
+            assertEquals(statuses[i], signals[i], provider.detectCompactionSignal(message));
+        }
+        assertEquals(AgentProvider.CompactionSignal.NONE,
+                provider.detectCompactionSignal(compactionUpdate(
+                        "compaction_summary_chunk", "completed", false)));
+    }
+
+    @Test
     public void doesNotTreatDisplayTitleAsCompactionContract() {
         CodexAcpProvider provider = new CodexAcpProvider();
 
