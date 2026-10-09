@@ -81,7 +81,7 @@ async function testObservationDraft(){
 }
 async function saveObservation(){
     var owner=document.getElementById('observationOwner').value,name=document.getElementById('observationName').value.trim(),script=document.getElementById('observationScript').value,frequency=document.getElementById('observationFrequency').value.trim();
-    if(!owner||!name||!script.trim()||!/^([1-9][0-9]*)(s|min|h)$/.test(frequency)){showSnackbar('请填写名称、选择智能体和脚本，频率格式如 30s、10min、60h');switchObservationTab('config');return}
+    if(!owner||!name||!script.trim()||!/^([1-9][0-9]*)(s|min|h)$/.test(frequency)){showSnackbar('请填写名称、选择智能体和脚本，频率格式如 30s、10min、60h');switchObservationTab(!script.trim()&&owner&&name?'result':'config');return}
     var eventAction=document.getElementById('observationEventAction').value.trim();
     if(!eventAction||eventAction.length>8192){showSnackbar(eventAction?'事件处理指令不能超过 8192 个字符':'请填写事件处理指令');switchObservationTab('config');document.getElementById('observationEventAction').focus();return}
     var channel=observationState.editing,button=document.getElementById('observationSaveButton');button.disabled=true;
