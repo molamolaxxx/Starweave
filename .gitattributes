@@ -1,2 +1,0 @@
-# Preserve upstream license wording and indentation; normalize line endings only.
-cmd-proxy-app/src/main/resources/embedded/pi/runtime/NODE-LICENSE-*.txt text eol=lf whitespace=-space-before-tab

@@ -4,9 +4,9 @@
 
 ## 分发与构建
 
-Pi 0.75.3 源码快照、ACP 适配参考源码、许可证、锁定依赖及 Node 24.21.0 运行资源位于 `cmd-proxy-app/src/main/resources/embedded/pi/`。项目维护的 ACP 适配层位于 `integration/`；不运行参考适配器的 CLI 或 daemon。
+Pi 0.75.3 源码快照、ACP 适配参考源码、许可证及锁定依赖位于 `cmd-proxy-app/src/main/resources/embedded/pi/`。项目维护的 ACP 适配层位于 `integration/`；不运行参考适配器的 CLI 或 daemon。
 
-JAR 包含 Linux x64 和 Windows x64 运行包，启动时无需下载、安装 npm/Pi 或配置全局 Pi。Linux 使用 Node 项目 unofficial-builds 的 glibc 2.17 兼容构建；Windows 使用官方 Node 构建。运行包在维护者构建时按发布 SHA-256 核验，启动解压时再核验内嵌资源 SHA-256。目前不包含 ARM 或 macOS 运行包。
+支持 Linux x64 和 Windows x64。使用内嵌 Pi 前需安装 **Node.js 22.19.0 或更高版本**，并确保启动 JAR 的进程 PATH 中可以找到 `node`（Windows 为 `node.exe`）。启动时检查 Node 版本，缺失或版本过低会明确提示；JAR 不携带、不下载、不安装 Node。Pi 及 npm 依赖随 JAR 分发，无需安装 npm/Pi 或配置全局 Pi，解压时核验依赖 SHA-256。当前支持范围不包含 ARM 或 macOS。
 
 ```bash
 node scripts/build-embedded-pi.mjs
@@ -48,4 +48,4 @@ node scripts/test-embedded-pi.mjs
 node cmd-proxy-app/src/test/js/embedded-pi-browser-test.js
 ```
 
-前者解压并执行实际捆绑 Node 与依赖，使用临时工作区和模拟 OpenAI/MCP 服务，不依赖真实密钥。GitHub Actions 在 Linux 和 Windows 分别运行。后者使用 Playwright/Chrome 验证桌面和移动端配置表单。Java 测试运行时使用显式临时 `CMD_PROXY_HOME`，避免读取开发机认证和注册配置。
+前者解压实际捆绑 Pi 依赖并通过系统 Node 执行，使用临时工作区和模拟 OpenAI/MCP 服务，不依赖真实密钥。GitHub Actions 在 Linux 和 Windows 分别验证 Node 22.19.0 和 24。后者使用 Playwright/Chrome 验证桌面和移动端配置表单。Java 测试运行时使用显式临时 `CMD_PROXY_HOME`，避免读取开发机认证和注册配置。

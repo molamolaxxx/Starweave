@@ -38,11 +38,10 @@ public final class EmbeddedPiAgentProvider implements AgentProvider {
             if (robot == null || robot.getEmbeddedPi() == null) throw new IllegalArgumentException("请配置内嵌 Pi 模型接口");
             robot.getEmbeddedPi().validate(robot.getModel());
         } catch (IllegalArgumentException e) { throw new IOException(e.getMessage()); }
+        Path node = EmbeddedPiRuntimeManager.systemNode(env);
         Path runtime = runtimeManager.prepare();
-        boolean windows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("windows");
-        env.put(COMMAND, runtime.resolve(windows ? "node.exe" : "node").toString());
+        env.put(COMMAND, node.toString());
         env.put(ENTRY, runtime.resolve("integration/entry.mjs").toString());
-        env.put("PATH", runtime + java.io.File.pathSeparator + env.getOrDefault("PATH", ""));
         env.put("PI_SKIP_VERSION_CHECK", "1");
         JsonObject config = new JsonObject(); EmbeddedPiConfig pi = robot.getEmbeddedPi();
         config.addProperty("baseUrl", pi.getBaseUrl().trim()); config.addProperty("apiKey", pi.getApiKey().trim());

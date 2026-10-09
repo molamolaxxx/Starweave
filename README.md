@@ -340,7 +340,8 @@ Starweave 以一个常驻 MCP Server 的名义（名称 `acp-harness-runtime`）
 
 - **JDK 8+**（推荐 JDK 17）
 - **Maven 3.6+**
-- 使用 npm 系引擎（OpenCode / Claude / Codex / DeepSeek Harness）时需 **Node.js 22+**
+- 使用「内嵌引擎 · Pi」时需安装 **Node.js 22.19.0+** 并加入 PATH；Pi 源码与依赖已包含在 JAR 中
+- 使用其他 npm 系引擎（OpenCode / Claude / Codex / DeepSeek Harness）时需 **Node.js 22+**
 
 ### 1. 先构建依赖：my-rpc
 

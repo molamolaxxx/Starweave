@@ -38,19 +38,40 @@ public class EmbeddedPiAgentProviderTest {
         assertEquals(25, provider.extractContextUsage(usage), .001);
         assertEquals("session/close", provider.getSessionCloseMethod()); assertTrue(provider.closeInputAfterSessionClose());
     }
-    @Test public void offlineRuntimeLaunchDoesNotUseGlobalNodeOrExposeKeyInArguments() throws Exception {
+    @Test public void offlineDependenciesUseSystemNodeWithoutExposingKeyInArguments() throws Exception {
         AcpRobotParam robot = new AcpRobotParam(); robot.setName("测试智能体"); robot.setModel("test-model");
         EmbeddedPiConfig config = new EmbeddedPiConfig(); config.setApiKey("isolated-key"); config.setStateId("test-agent"); robot.setEmbeddedPi(config);
-        EmbeddedPiAgentProvider provider = new EmbeddedPiAgentProvider(new EmbeddedPiRuntimeManager(temporary.getRoot().toPath())); Map<String, String> env = new HashMap<>(); env.put("PATH", "");
+        Path runtimeRoot = temporary.newFolder("runtime with spaces").toPath();
+        EmbeddedPiAgentProvider provider = new EmbeddedPiAgentProvider(new EmbeddedPiRuntimeManager(runtimeRoot)); Map<String, String> env = new HashMap<>(System.getenv());
+        Path systemNode = EmbeddedPiRuntimeManager.systemNode(env);
         provider.prepareLaunch(robot, env);
         String command = provider.getCommand(robot, env); assertTrue(Files.isRegularFile(java.nio.file.Paths.get(command)));
+        assertEquals(systemNode.toString(), command);
+        assertFalse(java.nio.file.Paths.get(command).startsWith(runtimeRoot));
         assertFalse(provider.getArgs(robot, env)[0].contains("isolated-key"));
         assertEquals("isolated-key", JsonParser.parseString(env.get("STARWEAVE_PI_CONFIG")).getAsJsonObject().get("apiKey").getAsString());
         Process process = new ProcessBuilder(command, "--version").redirectErrorStream(true).start();
         assertTrue(process.waitFor(10, TimeUnit.SECONDS)); assertEquals(0, process.exitValue());
-        Path marker = java.nio.file.Paths.get(command).getParent().resolve(".complete");
+        Path runtime = java.nio.file.Paths.get(provider.getArgs(robot, env)[0]).getParent().getParent();
+        assertFalse(Files.exists(runtime.resolve("node"))); assertFalse(Files.exists(runtime.resolve("node.exe")));
+        Path marker = runtime.resolve(".complete");
         long modified = Files.getLastModifiedTime(marker).toMillis(); provider.prepareLaunch(robot, env);
         assertEquals(modified, Files.getLastModifiedTime(marker).toMillis());
+    }
+    @Test public void missingNodeAndUnsupportedVersionsAreRejected() throws Exception {
+        try { EmbeddedPiRuntimeManager.findSystemNode(new HashMap<>(), false); fail(); }
+        catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("PATH")); }
+        for (String version : new String[]{"v18.20.0", "v22.18.0", "invalid"}) {
+            try { EmbeddedPiRuntimeManager.validateNodeVersion(version); fail(version); }
+            catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("22.19.0")); }
+        }
+        EmbeddedPiRuntimeManager.validateNodeVersion("v22.19.0"); EmbeddedPiRuntimeManager.validateNodeVersion("v24.21.0");
+    }
+    @Test public void windowsNodePathSupportsSpacesAndCaseInsensitivePathKey() throws Exception {
+        Path folder = temporary.newFolder("Node Program Files").toPath();
+        Path node = Files.createFile(folder.resolve("node.exe"));
+        Map<String, String> env = new HashMap<>(); env.put("Path", "\"" + folder + "\"");
+        assertEquals(node.toAbsolutePath(), EmbeddedPiRuntimeManager.findSystemNode(env, true));
     }
     @Test public void invalidBudgetsAndStatePathsFailBeforeLaunch() {
         EmbeddedPiConfig config = new EmbeddedPiConfig(); config.setApiKey("test"); config.setContextWindow(4096);

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "nodeVersion": "24.21.0",
+  "minimumNodeVersion": "22.19.0",
   "piVersion": "0.75.3",
   "sources": {
     "pi": {
@@ -14,8 +14,6 @@
     }
   },
   "assets": {
-    "runtime/node-linux-x64.gz": "200aa91eaed7c2be8f0ea7094c9b5f7cfca6a47b11325ff7b0367fc9a6e91468",
-    "runtime/node-win-x64.gz": "956df388e90e9511aff45a55f584dc076456e2e0efecd28e91e1e2cf2178d978",
     "runtime/dependencies.zip": "d36135ce9531115d13caca463f4b2368150c11f62573bb287bf18fe054b92aa3"
   }
 }
