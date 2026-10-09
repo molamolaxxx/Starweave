@@ -50,7 +50,10 @@ public class MemoryAcpClient extends AbstractAcpClient
         }
         AcpRobotParam override = new AcpRobotParam();
         override.setName(original.getName());
+        override.setWorkDir(original.getWorkDir());
         override.setAgentProvider(original.getAgentProvider());
+        override.setProviderVersion(original.getProviderVersion());
+        override.setEmbeddedPi(original.getEmbeddedPi());
         override.setApiKey(original.getApiKey());
         override.setCodexHome(original.getCodexHome());
         override.setDeepSeekBaseUrl(original.getDeepSeekBaseUrl());

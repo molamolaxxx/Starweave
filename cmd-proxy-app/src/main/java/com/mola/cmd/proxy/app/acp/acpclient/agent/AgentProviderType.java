@@ -6,6 +6,8 @@ package com.mola.cmd.proxy.app.acp.acpclient.agent;
  */
 public enum AgentProviderType {
 
+    EMBEDDED_PI_ACP,
+
     KIRO_CLI,
     OPENCODE,
     CLAUDE_AGENT_ACP,

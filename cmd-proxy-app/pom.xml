@@ -131,6 +131,15 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>embedded/pi/node_modules/**</exclude>
+                    <exclude>embedded/pi/test/**</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
 
             <!-- groovy-all 会传递引入 TestNG；显式固定 JUnit Provider，避免 JUnit 用例被识别为 0 条。 -->

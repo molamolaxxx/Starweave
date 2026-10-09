@@ -31,6 +31,7 @@ public class AcpRobotParam {
     private AutoSleepConfig autoSleep;
     private List<ContactRef> contacts;
     private String model;
+    private com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiConfig embeddedPi;
     private String apiKey;
     private String codexHome;
     private String deepSeekBaseUrl;
@@ -240,6 +241,9 @@ public class AcpRobotParam {
 
     public String getModel() { return model; }
     public void setModel(String model) { this.model = model; }
+
+    public com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiConfig getEmbeddedPi() { return embeddedPi; }
+    public void setEmbeddedPi(com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiConfig value) { embeddedPi = value; }
 
     public String getApiKey() { return apiKey; }
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }

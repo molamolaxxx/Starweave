@@ -6,7 +6,7 @@ select.value=providers.indexOf(current)>=0?current:'all';
 }
 
 function hasProxyAddress(robot){return !!(robot.httpProxy&&robot.httpProxy.trim())}
-function providerDisplayName(provider){var names={KIRO_CLI:'Kiro CLI',OPENCODE:'OpenCode',CLAUDE_AGENT_ACP:'Claude Agent · ACP',CODEX_ACP:'Codex · ACP',DEEPSEEK_HARNESS_ACP:'DeepSeek Harness · ACP'};return names[provider]||provider||'Kiro CLI'}
+function providerDisplayName(provider){var names={EMBEDDED_PI_ACP:'内嵌引擎 · Pi',KIRO_CLI:'Kiro CLI',OPENCODE:'OpenCode',CLAUDE_AGENT_ACP:'Claude Agent · ACP',CODEX_ACP:'Codex · ACP',DEEPSEEK_HARNESS_ACP:'DeepSeek Harness · ACP'};return names[provider]||provider||'Kiro CLI'}
 function isNpmProvider(provider){return ['OPENCODE','CLAUDE_AGENT_ACP','CODEX_ACP','DEEPSEEK_HARNESS_ACP'].indexOf(provider)>=0}
 function providerVersionOptions(robot){
 var selected=robot.providerVersion||'',runtime=robot._providerRuntime||{},installed=runtime.installedVersions||[],defaultVersion=runtime.defaultVersion||'';

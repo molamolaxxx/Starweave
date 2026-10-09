@@ -815,6 +815,7 @@ public class ConfigUiServer {
         appendDshRuntimeProjection(json);
         appendProviderRuntimeProjection(json);
         maskChannelSecrets(json);
+        com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiConfigStore.mask(json, SECRET_MASK);
         String content = JSON.toJSONString(json, SerializerFeature.PrettyFormat);
         sendResponse(exchange, 200, "application/json", content);
     }
@@ -898,7 +899,20 @@ public class ConfigUiServer {
             sendResponse(exchange, 400, "application/json", JSON.toJSONString(error));
             return;
         }
-        sendResponse(exchange, 200, "application/json", "{\"ok\":true}");
+        JSONObject savedResponse = new JSONObject(true);
+        savedResponse.put("ok", true);
+        JSONObject piStates = new JSONObject(true);
+        com.alibaba.fastjson.JSONArray savedRobots = json.getJSONArray("robots");
+        if (savedRobots != null) for (int i = 0; i < savedRobots.size(); i++) {
+            JSONObject robot = savedRobots.getJSONObject(i), pi = robot.getJSONObject("embeddedPi");
+            if (pi != null) {
+                JSONObject state = new JSONObject(true); state.put("stateId", pi.getString("stateId"));
+                state.put("apiKey", pi.getString("apiKey") == null ? "" : SECRET_MASK);
+                piStates.put(robot.getString("name"), state);
+            }
+        }
+        savedResponse.put("embeddedPiStates", piStates);
+        sendResponse(exchange, 200, "application/json", savedResponse.toJSONString());
     }
 
     String validateChannelConversationMappings(JSONObject root) {
@@ -1126,6 +1140,22 @@ public class ConfigUiServer {
             JSONObject request = JSON.parseObject(readBody(exchange, 64L * 1024L));
             if (request == null) request = new JSONObject(true);
             String action = request.getString("action");
+            if ("EMBEDDED_PI_ACP".equalsIgnoreCase(request.getString("provider"))) {
+                JSONObject pi = request.getJSONObject("embeddedPi");
+                if (pi != null && SECRET_MASK.equals(pi.getString("apiKey"))) {
+                    Path path = Paths.get(CONFIG_PATH);
+                    if (Files.isRegularFile(path)) {
+                        JSONObject saved = JSON.parseObject(new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
+                        com.alibaba.fastjson.JSONArray robots = saved.getJSONArray("robots");
+                        if (robots != null) for (int i = 0; i < robots.size(); i++) {
+                            JSONObject robot = robots.getJSONObject(i), configured = robot.getJSONObject("embeddedPi");
+                            if (configured != null && pi.getString("stateId") != null && pi.getString("stateId").equals(configured.getString("stateId"))) {
+                                pi.put("apiKey", configured.getString("apiKey")); break;
+                            }
+                        }
+                    }
+                }
+            }
             if ("remember".equalsIgnoreCase(action)) {
                 providerModelDiscovery.remember(request);
                 JSONObject result = new JSONObject(true);

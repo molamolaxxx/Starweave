@@ -5,6 +5,7 @@ import com.google.gson.JsonParser;
 import com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProvider;
 import com.mola.cmd.proxy.app.acp.acpclient.agent.CodexAcpProvider;
 import com.mola.cmd.proxy.app.acp.acpclient.agent.KiroCliAgentProvider;
+import com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiAgentProvider;
 import com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager;
 import com.mola.cmd.proxy.app.acp.acpclient.listener.AcpResponseListener;
 import org.junit.Rule;
@@ -110,6 +111,33 @@ public class AcpClientCompactionProtocolTest {
         return JsonParser.parseString(request.trim()).getAsJsonObject()
                 .getAsJsonObject("params").getAsJsonArray("prompt")
                 .get(0).getAsJsonObject().get("text").getAsString().contains("<acp-harness>");
+    }
+
+    @Test public void embeddedPiCompactionReinjectsHarnessWithoutGenericToolHistory() throws Exception {
+        AcpClientIdentity identity = AcpClientIdentity.main("pi-compact-test", "Pi", "Pi");
+        ConversationHistoryManager history = new ConversationHistoryManager(identity, temporary.newFolder().toPath());
+        AcpClient client = new AcpClient(new EmbeddedPiAgentProvider(), temporary.newFolder().getAbsolutePath(), identity, null, history);
+        client.sessionId = "pi-session";
+        AtomicInteger cards = new AtomicInteger();
+        AcpResponseListener listener = new AcpResponseListener() {
+            public void onMessage(String text) { }
+            public void onToolCall(String id, String title, String status, JsonObject update) { fail("Pi compaction is not an ordinary tool"); }
+            public void onComplete(String text) { }
+            public void onError(Exception error) { throw new AssertionError(error); }
+            public void onCompactionEvent(String type, String provider) { assertEquals("COMPACTION_COMPLETED", type); cards.incrementAndGet(); }
+        };
+        assertTrue(prompt(client, listener, ""));
+        assertFalse(prompt(client, listener, piCompaction("in_progress") + piCompaction("completed")));
+        assertEquals(1, cards.get()); assertTrue(prompt(client, listener, "")); assertFalse(prompt(client, listener, ""));
+        assertFalse(prompt(client, listener, piCompaction("in_progress") + piCompaction("failed")));
+        assertFalse(prompt(client, listener, ""));
+        history.getFullHistory(client.sessionId).forEach(message -> assertNull(message.getToolCallId()));
+    }
+
+    private String piCompaction(String status) {
+        return "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call_update\","
+                + "\"toolCallId\":\"pi-compact\",\"title\":\"压缩上下文\",\"status\":\"" + status + "\","
+                + "\"_meta\":{\"starweaveCompaction\":{\"status\":\"" + status + "\"}}}}}\n";
     }
 
     private String update(String type, String status) {

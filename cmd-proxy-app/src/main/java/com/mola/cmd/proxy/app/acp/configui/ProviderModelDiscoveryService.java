@@ -73,6 +73,8 @@ final class ProviderModelDiscoveryService {
             String provider, JSONObject request, boolean force) throws IOException {
         AgentProviderType type = AgentProviderType.fromString(provider);
         switch (type) {
+            case EMBEDDED_PI_ACP:
+                return discoverEmbeddedPi(request);
             case OPENCODE:
                 return discoverOpenCode(request, force);
             case CODEX_ACP:
@@ -153,6 +155,16 @@ final class ProviderModelDiscoveryService {
             }
         }
         return result;
+    }
+
+    private List<AgentModelCatalog.ModelEntry> discoverEmbeddedPi(JSONObject request) throws IOException {
+        JSONObject pi = request.getJSONObject("embeddedPi");
+        if (pi == null) return Collections.emptyList();
+        String base = trim(pi.getString("baseUrl")), key = secret(pi.getString("apiKey"), null);
+        if (base == null || key == null) return Collections.emptyList();
+        while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        Map<String, String> headers = new LinkedHashMap<>(); headers.put("Authorization", "Bearer " + key);
+        return entries(getModels(base + "/models", headers, request));
     }
 
     private List<AgentModelCatalog.ModelEntry> discoverClaude(JSONObject request) throws IOException {

@@ -1,0 +1,11 @@
+{
+  "pi": {
+    "repository": "https://github.com/earendil-works/pi-mono",
+    "commit": "a7d8dd3d5db7d66aa5cc6886e32768b1196ce91f",
+    "version": "0.75.3"
+  },
+  "acpReference": {
+    "repository": "https://github.com/victor-software-house/pi-acp",
+    "commit": "0ef24b24c97ac81a5e87a17d8fd74ef97fb34d8b"
+  }
+}

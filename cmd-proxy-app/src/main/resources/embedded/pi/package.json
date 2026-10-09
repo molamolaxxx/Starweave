@@ -1,0 +1,18 @@
+{
+  "name": "starweave-embedded-pi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.75.3",
+    "@agentclientprotocol/sdk": "0.22.1",
+    "@modelcontextprotocol/sdk": "1.27.1",
+    "undici": "8.11.2"
+  },
+  "overrides": {
+    "@earendil-works/pi-ai": "0.75.3",
+    "@earendil-works/pi-agent-core": "0.75.3",
+    "@earendil-works/pi-tui": "0.75.3"
+  }
+}

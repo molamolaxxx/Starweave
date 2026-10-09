@@ -15,6 +15,7 @@ public class AgentProviderRouter {
     private final Map<AgentProviderType, AgentProvider> providers = new EnumMap<>(AgentProviderType.class);
 
     private AgentProviderRouter() {
+        providers.put(AgentProviderType.EMBEDDED_PI_ACP, new EmbeddedPiAgentProvider());
         providers.put(AgentProviderType.KIRO_CLI, new KiroCliAgentProvider());
         providers.put(AgentProviderType.OPENCODE, new OpenCodeAgentProvider());
         providers.put(AgentProviderType.CLAUDE_AGENT_ACP, new ClaudeAgentAcpProvider());

@@ -39,6 +39,7 @@ build/
 
 ### Runtime / local ###
 logs/
+node_modules/
 .directory
 .cmd-proxy/
 

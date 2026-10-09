@@ -163,6 +163,7 @@ public final class ChannelConfigFileStore {
                             StandardCharsets.UTF_8))
                     : new JSONObject();
             JSONArray channels = submitted.getJSONArray("channels");
+            com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiConfigStore.merge(submitted, previous, secretMask);
             JSONArray oldChannels = previous.getJSONArray("channels");
             if (channels != null) {
                 for (int i = 0; i < channels.size(); i++) {
