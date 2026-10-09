@@ -13,7 +13,9 @@ public class EmbeddedPiConfigStoreTest {
     @Test public void newConfigurationGetsStableIdentityAndDefaults() {
         JSONObject root = root("Agent", "EMBEDDED_PI_ACP", "{\"apiKey\":\"test-key\"}");
         EmbeddedPiConfigStore.merge(root, new JSONObject(), "********");
-        String id = pi(root).getString("stateId"); assertNotNull(id); assertEquals(128000, pi(root).getIntValue("contextWindow"));
+        String id = pi(root).getString("stateId"); assertNotNull(id); assertEquals(1000000, pi(root).getIntValue("contextWindow"));
+        assertEquals(64000, pi(root).getIntValue("maxTokens"));
+        assertEquals("https://api.deepseek.com", pi(root).getString("baseUrl"));
         JSONObject second = JSON.parseObject(root.toJSONString()); pi(second).remove("stateId");
         EmbeddedPiConfigStore.merge(second, root, "********"); assertEquals(id, pi(second).getString("stateId"));
     }

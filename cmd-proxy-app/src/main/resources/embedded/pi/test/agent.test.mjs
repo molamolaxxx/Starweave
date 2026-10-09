@@ -19,8 +19,8 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 const resource = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 test('context budget and custom endpoint validation', () => {
   const config = { baseUrl: 'http://localhost:1234/v1', model: 'custom', apiKey: 'test' };
-  assert.equal(validateConfig(config).contextWindow, 128000);
-  assert.equal(validateConfig(config).maxTokens, 8192);
+  assert.equal(validateConfig(config).contextWindow, 1000000);
+  assert.equal(validateConfig(config).maxTokens, 64000);
   assert.throws(() => validateConfig({ ...config, contextWindow: 4096 }), /上下文/);
   assert.throws(() => validateConfig({ ...config, baseUrl: 'file:///tmp/model' }), /HTTP/);
   assert.equal(commandText('<acp-harness>injected context</acp-harness>\n[Current Time: test]\n/compact keep progress'), '/compact keep progress');

@@ -44,9 +44,9 @@ public final class EmbeddedPiConfigStore {
                 if (oldPi == null || blank(oldPi.getString("apiKey"))) throw new IllegalArgumentException("请重新输入内嵌 Pi API Key");
                 pi.put("apiKey", oldPi.getString("apiKey"));
             }
-            if (!pi.containsKey("baseUrl")) pi.put("baseUrl", "https://api.openai.com/v1");
-            if (!pi.containsKey("contextWindow")) pi.put("contextWindow", 128000);
-            if (!pi.containsKey("maxTokens")) pi.put("maxTokens", 8192);
+            if (!pi.containsKey("baseUrl")) pi.put("baseUrl", "https://api.deepseek.com");
+            if (!pi.containsKey("contextWindow")) pi.put("contextWindow", 1000000);
+            if (!pi.containsKey("maxTokens")) pi.put("maxTokens", 64000);
             if ("EMBEDDED_PI_ACP".equalsIgnoreCase(robot.getString("agentProvider"))) {
                 pi.toJavaObject(EmbeddedPiConfig.class).validate(robot.getString("model"));
             }

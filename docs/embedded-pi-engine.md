@@ -1,8 +1,10 @@
 # 内嵌引擎 · Pi
 
-新建智能体默认选择「内嵌引擎 · Pi」。填写模型 ID、OpenAI 兼容 API 的 Base URL 和独立 API Key 即可使用；现有智能体保留原运行引擎。高级设置默认折叠，包含上下文窗口（128000 Token）和最大输出（8192 Token）。上下文窗口包含输入和输出，压缩预算额外预留系统提示及工具结果空间。模型必须支持流式 Chat Completions 和工具调用；图片取决于实际模型能力。
+新建智能体默认选择「内嵌引擎 · Pi」。填写模型 ID、OpenAI 兼容 API 的 Base URL 和独立 API Key 即可使用；现有智能体保留原运行引擎。高级设置默认折叠，包含上下文窗口（1000000 Token）和最大输出（64000 Token），默认 API 地址为 `https://api.deepseek.com`。上下文窗口包含输入和输出，压缩预算额外预留系统提示及工具结果空间。模型必须支持流式 Chat Completions 和工具调用；图片取决于实际模型能力。
 
 ## 分发与构建
+
+MolaChat 注册使用默认头像 `img/pi.png`，显式配置的头像优先。原始 SVG 与 512×512 透明 PNG 位于 `embedded/pi/branding/`；MolaChat 前端部署时将 PNG 放入 `img/pi.png`。
 
 Pi 0.75.3 源码快照、ACP 适配参考源码、许可证及锁定依赖位于 `cmd-proxy-app/src/main/resources/embedded/pi/`。项目维护的 ACP 适配层位于 `integration/`；不运行参考适配器的 CLI 或 daemon。
 

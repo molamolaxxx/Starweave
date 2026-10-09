@@ -5,10 +5,10 @@ import java.net.URI;
 /** Robot-scoped configuration; credentials never fall back to global Pi/OpenAI settings. */
 public class EmbeddedPiConfig {
     private String stateId;
-    private String baseUrl = "https://api.openai.com/v1";
+    private String baseUrl = "https://api.deepseek.com";
     private String apiKey;
-    private int contextWindow = 128000;
-    private int maxTokens = 8192;
+    private int contextWindow = 1000000;
+    private int maxTokens = 64000;
 
     public String getStateId() { return stateId; }
     public void setStateId(String value) { stateId = value; }

@@ -43,12 +43,13 @@ const server = http.createServer((request, response) => {
             assert.equal(await page.locator('#dProvider').inputValue(), 'EMBEDDED_PI_ACP');
             assert.equal(await page.locator('#dProvider option:checked').textContent(), '内嵌引擎 · Pi');
             assert.equal(await page.locator('#embeddedPiGroup details').evaluate(el => el.open), false);
+            assert.equal(await page.locator('#dPiBaseUrl').inputValue(), 'https://api.deepseek.com');
             await page.locator('#dPiBaseUrl').fill('https://example.test/v1');
             await page.locator('#dPiApiKey').fill('test-only-key');
             await page.locator('#dModel').fill('custom-model');
             await page.locator('#embeddedPiGroup summary').click();
-            assert.equal(await page.locator('#dPiContext').inputValue(), '128000');
-            assert.equal(await page.locator('#dPiMaxTokens').inputValue(), '8192');
+            assert.equal(await page.locator('#dPiContext').inputValue(), '1000000');
+            assert.equal(await page.locator('#dPiMaxTokens').inputValue(), '64000');
             await page.locator('#dPiContext').fill('64000'); await page.locator('#dPiMaxTokens').fill('4096');
             await page.locator('[data-robot-tab="basic"]').click();
             await page.locator('#dName').fill('Pi 测试'); await page.locator('#dWorkDir').fill('/test 中文 workspace');

@@ -10,7 +10,7 @@ export function validateConfig(config) {
   const baseUrl = new URL(config.baseUrl);
   if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) throw new Error('API 地址必须是 HTTP/HTTPS Base URL');
   if (!config.model?.trim() || !config.apiKey?.trim()) throw new Error('请配置模型和 API Key');
-  const contextWindow = config.contextWindow ?? 128000, maxTokens = config.maxTokens ?? 8192;
+  const contextWindow = config.contextWindow ?? 1000000, maxTokens = config.maxTokens ?? 64000;
   if (!Number.isSafeInteger(contextWindow) || !Number.isSafeInteger(maxTokens) || contextWindow < 1024 || maxTokens < 1 || maxTokens + 512 >= contextWindow) throw new Error('上下文窗口必须大于最大输出 Token 数，并预留至少 512 Token');
   return { ...config, baseUrl: config.baseUrl.replace(/\/+$/, ''), contextWindow, maxTokens };
 }

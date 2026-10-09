@@ -81,6 +81,9 @@ public class AcpRobotParam {
         if (avatar != null && !avatar.isEmpty()) {
             return avatar;
         }
+        if ("EMBEDDED_PI_ACP".equalsIgnoreCase(agentProvider)) {
+            return "img/pi.png";
+        }
         if ("OPENCODE".equalsIgnoreCase(agentProvider)) {
             return "img/opencode.png";
         }
