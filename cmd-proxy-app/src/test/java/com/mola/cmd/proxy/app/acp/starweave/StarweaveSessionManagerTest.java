@@ -1,5 +1,6 @@
 package com.mola.cmd.proxy.app.acp.starweave;
 
+import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.mola.cmd.proxy.app.acp.AcpRobotParam;
 import com.mola.cmd.proxy.app.acp.acpclient.AcpClient;
@@ -336,6 +337,58 @@ public class StarweaveSessionManagerTest {
     }
 
     @Test
+    public void wakeFallbackWithAutoRotationDisabledSyncsIndexAndAcceptsNextMessage()
+            throws Exception {
+        AcpClientRegistry registry = registry(new FakeFactory());
+        try {
+            StarweaveSessionManager manager = manager(registry);
+            JSONObject opened = manager.open("Robot");
+            String groupId = opened.getString("groupId");
+            String oldSession = opened.getString("sessionId");
+            long oldGeneration = opened.getLongValue("generation");
+            FakeClient client = (FakeClient) registry.getClient(groupId);
+            com.mola.cmd.proxy.app.acp.AutoNewSessionConfig config =
+                    new com.mola.cmd.proxy.app.acp.AutoNewSessionConfig();
+            config.setEnabled(false);
+            client.getRobotParam().setAutoNewSession(config);
+            assertTrue(client.restoreSleepAfterRestart());
+
+            assertTrue(manager.send(groupId, "wake fallback", oldSession,
+                    oldGeneration, "REJECT").getBooleanValue("accepted"));
+            JSONObject current = manager.status(groupId);
+            String newSession = current.getString("sessionId");
+            assertNotEquals(oldSession, newSession);
+            assertEquals(oldGeneration + 1L, current.getLongValue("generation"));
+
+            JSONArray events = manager.eventBatch(groupId, newSession, 0L, null)
+                    .getJSONArray("events");
+            boolean replaced = false;
+            boolean messageOnNewSession = false;
+            for (int i = 0; i < events.size(); i++) {
+                JSONObject event = events.getJSONObject(i);
+                assertEquals(newSession, event.getString("sessionId"));
+                assertEquals(oldGeneration + 1L, event.getLongValue("generation"));
+                if ("SESSION_REPLACED".equals(event.getString("type"))) {
+                    replaced = true;
+                    assertEquals(oldSession,
+                            event.getJSONObject("payload").getString("oldSessionId"));
+                }
+                if ("USER_MESSAGE_ACCEPTED".equals(event.getString("type"))) {
+                    messageOnNewSession = true;
+                }
+            }
+            assertTrue(replaced);
+            assertTrue(messageOnNewSession);
+            client.completePrompt();
+            assertTrue(manager.send(groupId, "next message", newSession,
+                    current.getLongValue("generation"), "REJECT")
+                    .getBooleanValue("accepted"));
+        } finally {
+            registry.closeAllForShutdown();
+        }
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     public void agentToolRotationUpdatesIndexAndStartsPromptOnNewSession() throws Exception {
         AcpClientRegistry registry = registry(new FakeFactory());
@@ -658,6 +711,10 @@ public class StarweaveSessionManagerTest {
         @Override
         public void closeForShutdown() {
             close();
+        }
+
+        private void completePrompt() {
+            state.set(State.READY);
         }
 
         @Override

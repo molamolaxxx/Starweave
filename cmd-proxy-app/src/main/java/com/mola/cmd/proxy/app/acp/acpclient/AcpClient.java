@@ -527,7 +527,9 @@ public class AcpClient extends AbstractAcpClient {
         try {
             wakeRuntimeSession();
             forceNewSession = false;
-            if (createNew) {
+            // 恢复失败回退 session/new 也会改变身份，不能只同步自动轮转分支。
+            boolean sessionChanged = !java.util.Objects.equals(sleepingSessionId, sessionId);
+            if (sessionChanged) {
                 notifySessionRotatedOnWake(sleepingSessionId, sessionId);
             }
             lastActivityAt.set(System.currentTimeMillis());
@@ -550,7 +552,7 @@ public class AcpClient extends AbstractAcpClient {
             }
             getLiveOutputListener().onLifecycleEvent(
                     "AGENT_WAKE", "SLEEP", "READY",
-                    System.currentTimeMillis() - startedAt, createNew);
+                    System.currentTimeMillis() - startedAt, sessionChanged);
             return true;
         } catch (IOException | RuntimeException failure) {
             notifySleeping();

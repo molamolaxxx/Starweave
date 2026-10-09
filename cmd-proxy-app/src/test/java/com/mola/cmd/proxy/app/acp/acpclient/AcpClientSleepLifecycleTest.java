@@ -20,6 +20,7 @@ public class AcpClientSleepLifecycleTest {
         RecordingListener listener = new RecordingListener();
         client.setGlobalListener(listener);
         client.readyAt(1_000L);
+        client.setSessionId("session-old");
 
         assertTrue(client.sleepIfIdle(61_000L, 60_000L));
         assertEquals(AbstractAcpClient.State.SLEEP, client.getState());
@@ -80,6 +81,26 @@ public class AcpClientSleepLifecycleTest {
     }
 
     @Test
+    public void wakeFallbackNotifiesActualRotationWithAutoNewSessionDisabled() throws Exception {
+        FakeClient client = new FakeClient();
+        RecordingListener listener = new RecordingListener();
+        client.setGlobalListener(listener);
+        client.setSessionId("session-old");
+        client.readyAt(System.currentTimeMillis());
+        client.autoNewSession(false, 0L);
+        client.fallbackToNew = true;
+        java.util.List<String> rotations = new java.util.ArrayList<>();
+        client.setSessionRotationListener((previous, current) ->
+                rotations.add(previous + "->" + current));
+        assertTrue(client.restoreSleepAfterRestart());
+
+        assertTrue(client.wakeIfSleeping());
+        assertFalse(client.createdNew);
+        assertEquals(Collections.singletonList("session-old->session-1"), rotations);
+        assertEquals("AGENT_WAKE:SLEEP:READY:true", listener.lifecycleEvent);
+    }
+
+    @Test
     public void restoredSleepRotatesExpiredSessionWithoutSavedMarker() throws Exception {
         FakeClient client = new FakeClient();
         client.autoNewSession(true, System.currentTimeMillis() - 120_000L);
@@ -110,6 +131,11 @@ public class AcpClientSleepLifecycleTest {
 
     private void assertWakeKeepsSession(boolean enabled, long lastMessage) throws Exception {
         FakeClient client = new FakeClient();
+        RecordingListener listener = new RecordingListener();
+        client.setGlobalListener(listener);
+        java.util.List<String> rotations = new java.util.ArrayList<>();
+        client.setSessionRotationListener((previous, current) ->
+                rotations.add(previous + "->" + current));
         client.autoNewSession(enabled, lastMessage);
         client.readyAt(System.currentTimeMillis());
         client.setSessionId("session-old");
@@ -118,6 +144,8 @@ public class AcpClientSleepLifecycleTest {
         assertFalse(client.createdNew);
         assertEquals("session-old", client.getSessionId());
         assertEquals(lastMessage, client.getLastMessageAt());
+        assertTrue(rotations.isEmpty());
+        assertEquals("AGENT_WAKE:SLEEP:READY:false", listener.lifecycleEvent);
     }
 
     @Test
@@ -163,6 +191,7 @@ public class AcpClientSleepLifecycleTest {
         private int wakes;
         private boolean createdNew;
         private boolean failWake;
+        private boolean fallbackToNew;
 
         private FakeClient() {
             super(new FakeProvider(), "/tmp", "sleep-test", new AcpRobotParam());
@@ -199,7 +228,9 @@ public class AcpClientSleepLifecycleTest {
                 throw new IOException("unexpected state");
             }
             wakes++;
-            if (createdNew || getSessionId() == null) setSessionId("session-" + wakes);
+            if (createdNew || fallbackToNew || getSessionId() == null) {
+                setSessionId("session-" + wakes);
+            }
         }
     }
 
