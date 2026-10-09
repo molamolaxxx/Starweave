@@ -1607,7 +1607,8 @@ public final class TeamManager implements AutoCloseable {
                         }
                     }
                 }
-                messages.add(value);
+                messages.add(com.mola.cmd.proxy.app.acp.common.ToolOutputPreview.row(
+                        com.alibaba.fastjson.JSON.parseObject(gson.toJson(value))));
             }
             Map<String, Object> data = memberData(route.runtime, route.member, client);
             data.put("sessionId", sessionId);

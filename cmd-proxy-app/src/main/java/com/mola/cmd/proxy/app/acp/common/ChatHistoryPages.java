@@ -46,7 +46,7 @@ public final class ChatHistoryPages {
                     file.seek(offsets.get(i)); int length = file.readInt();
                     if (length < 0 || length > 128 * 1024 * 1024) throw new IOException("消息索引损坏");
                     byte[] bytes = new byte[length]; file.readFully(bytes);
-                    items.add(JSON.parseObject(new String(bytes, StandardCharsets.UTF_8)));
+                    items.add(ToolOutputPreview.row(JSON.parseObject(new String(bytes, StandardCharsets.UTF_8))));
                 }
             }
             JSONObject result = new JSONObject(new LinkedHashMap<>(metadata));
@@ -81,7 +81,7 @@ public final class ChatHistoryPages {
         try {
             try (RandomAccessFile output = new RandomAccessFile(temporary.toFile(), "rw")) {
                 for (int i = 0; i < items.size(); i++) {
-                    JSONObject row = items.getJSONObject(i); String id = row.getString("messageId");
+                    JSONObject row = ToolOutputPreview.row(items.getJSONObject(i)); String id = row.getString("messageId");
                     if (id == null || id.isEmpty()) throw new IllegalStateException("历史消息缺少稳定标识");
                     nextIds.add(id); nextOffsets.add(output.getFilePointer());
                     byte[] bytes = row.toJSONString().getBytes(StandardCharsets.UTF_8); output.writeInt(bytes.length); output.write(bytes);

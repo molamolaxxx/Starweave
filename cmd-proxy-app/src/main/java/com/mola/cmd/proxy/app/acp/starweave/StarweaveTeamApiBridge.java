@@ -483,7 +483,8 @@ public final class StarweaveTeamApiBridge {
                 current.manager.getRuntime(event.getTeamId());
         if (!team.isPresent() || !current.ownerId.equals(
                 team.get().getDefinition().getOwnerChatterId())) return false;
-        JSONObject value = JSON.parseObject(GSON.toJson(event));
+        JSONObject value = com.mola.cmd.proxy.app.acp.common.ToolOutputPreview.row(
+                JSON.parseObject(GSON.toJson(event)));
         value.put("teamEventSeq", event.getEventSeq());
         synchronized (EVENTS) {
             value.put("eventSeq", EVENT_SEQUENCE.incrementAndGet());
@@ -691,7 +692,7 @@ public final class StarweaveTeamApiBridge {
     }
 
     private static void appendEvent(JSONObject source) {
-        JSONObject event = new JSONObject(source);
+        JSONObject event = com.mola.cmd.proxy.app.acp.common.ToolOutputPreview.row(source);
         synchronized (EVENTS) {
             String eventId = event.getString("eventId");
             if (eventId != null) {

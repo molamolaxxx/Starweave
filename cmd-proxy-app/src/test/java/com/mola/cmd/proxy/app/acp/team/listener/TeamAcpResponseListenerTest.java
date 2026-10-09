@@ -27,6 +27,39 @@ public class TeamAcpResponseListenerTest {
     public TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
+    public void boundsStructuredAndRenderedToolEventsButPersistsOriginal() throws Exception {
+        TeamMemberDefinition member = member("member-large", 0);
+        TeamRuntime runtime = new TeamRuntime(TeamDefinition.creating(
+                "team-large", "owner-1", "Team", "team-acp-instance", "request-large",
+                java.util.Collections.singletonList(member), 100L));
+        ConversationHistoryManager history = new ConversationHistoryManager(
+                AcpClientIdentity.team("team-acp-member-large", "team-acp-instance",
+                        "team/team-large/member-large", "owner-1", "team-large", "member-large", "Source"),
+                temporary.newFolder("large-history").toPath());
+        List<TeamEventEnvelope> events = new ArrayList<>();
+        TeamAcpResponseListener listener = new TeamAcpResponseListener(
+                runtime, member, events::add, TeamMemberStateObserver.NOOP, history);
+        String large = String.join("", java.util.Collections.nCopies(100000, "large output\n"));
+        JsonObject output = new JsonObject(); output.addProperty("text", large);
+        JsonObject update = new JsonObject(); update.add("rawOutput", output);
+        listener.onToolCall("large-tool", "Read", "completed", update);
+
+        assertEquals(large, history.getCurrentTurn().get(0).getEventData()
+                .getAsJsonObject("update").getAsJsonObject("rawOutput").get("text").getAsString());
+        assertEquals(large, update.getAsJsonObject("rawOutput").get("text").getAsString());
+        assertTrue(events.stream().anyMatch(event -> event.getType() == TeamEventType.MESSAGE_CHUNK));
+        assertTrue(events.stream().anyMatch(event -> event.getType() == TeamEventType.TOOL_CALL));
+        for (TeamEventEnvelope event : events) {
+            assertTrue(new com.google.gson.Gson().toJson(event).getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 100000);
+        }
+        Map<?, ?> projected = (Map<?, ?>) events.stream()
+                .filter(event -> event.getType() == TeamEventType.TOOL_CALL).findFirst().get().getData();
+        assertEquals("large-tool", projected.get("toolCallId"));
+        assertEquals(Boolean.TRUE, projected.get("outputTruncated"));
+        assertEquals(history.getCurrentTurn().get(0).getEventData().get("messageId").getAsString(), projected.get("messageId"));
+    }
+
+    @Test
     public void mapsMessageToolAndCompletionWithStableMemberRoute() {
         Fixture fixture = fixture();
         JsonObject update = new JsonObject();

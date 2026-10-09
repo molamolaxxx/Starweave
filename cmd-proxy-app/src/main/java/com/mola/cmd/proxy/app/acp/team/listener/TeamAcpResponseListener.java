@@ -90,14 +90,23 @@ public final class TeamAcpResponseListener implements AcpResponseListener {
     @Override
     public void onToolCall(String toolCallId, String title, String status,
                            JsonObject update) {
-        renderer.onToolCall(title, status, update);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("toolCallId", nullToEmpty(toolCallId));
         data.put("title", nullToEmpty(title));
         data.put("status", nullToEmpty(status));
         data.put("update", update == null ? new JsonObject() : update);
         persist(TeamEventType.TOOL_CALL, data);
-        publish(TeamEventType.TOOL_CALL, data);
+        com.google.gson.Gson gson = new com.google.gson.Gson();
+        com.alibaba.fastjson.JSONObject preview = com.mola.cmd.proxy.app.acp.common.ToolOutputPreview.payload(
+                com.alibaba.fastjson.JSON.parseObject(gson.toJson(data)));
+        if (preview.getBooleanValue("outputTruncated")) {
+            JsonObject previewUpdate = preview.getJSONObject("update") == null
+                    ? new JsonObject() : gson.fromJson(preview.getJSONObject("update").toJSONString(), JsonObject.class);
+            renderer.onToolCall(preview.getString("title"), status, previewUpdate);
+        } else {
+            renderer.onToolCall(title, status, update);
+        }
+        publish(TeamEventType.TOOL_CALL, preview);
     }
 
     @Override

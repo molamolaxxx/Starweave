@@ -34,6 +34,10 @@ public final class StarweaveSessionEvent {
     }
 
     public JSONObject toJson() {
+        return com.mola.cmd.proxy.app.acp.common.ToolOutputPreview.row(toStoredJson());
+    }
+
+    JSONObject toStoredJson() {
         JSONObject value = new JSONObject(true);
         value.put("schemaVersion", 1);
         value.put("groupId", groupId);

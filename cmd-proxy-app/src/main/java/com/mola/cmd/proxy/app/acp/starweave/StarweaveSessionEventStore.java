@@ -325,7 +325,7 @@ public final class StarweaveSessionEventStore {
             try (BufferedWriter writer = Files.newBufferedWriter(journal,
                     StandardCharsets.UTF_8, StandardOpenOption.CREATE,
                     StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
-                writer.write(event.toJson().toJSONString());
+                writer.write(event.toStoredJson().toJSONString());
                 writer.newLine();
             }
         } catch (IOException e) {

@@ -13,6 +13,27 @@ import static org.junit.Assert.*;
 
 public class ChatHistoryPagesTest {
     @Rule public TemporaryFolder temp = new TemporaryFolder();
+
+    @Test public void boundsToolRowsInExistingCachedPagesWithoutRebuildingOrChangingCursor() throws Exception {
+        Path root = temp.newFolder().toPath();
+        ChatHistoryPages pages = new ChatHistoryPages(root, "cached-tools");
+        JSONObject page = pages.page("v1", () -> snapshot(2), null, 1);
+        String cursor = page.getString("olderCursor");
+        // Replace only the last cached row with the old format's oversized tool output.
+        JSONObject tool = new JSONObject(); tool.put("messageId", "message-1");
+        tool.put("role", "TOOL"); tool.put("rawOutput", String.join("", java.util.Collections.nCopies(100000, "output")));
+        JSONObject metadata = com.alibaba.fastjson.JSON.parseObject(new String(Files.readAllBytes(root.resolve("index.json")), java.nio.charset.StandardCharsets.UTF_8));
+        long offset = metadata.getJSONArray("offsets").getLongValue(1);
+        try (java.io.RandomAccessFile file = new java.io.RandomAccessFile(root.resolve("messages.dat").toFile(), "rw")) {
+            file.seek(offset); byte[] bytes = tool.toJSONString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            file.writeInt(bytes.length); file.write(bytes);
+        }
+        JSONObject bounded = new ChatHistoryPages(root, "cached-tools").page("v1", () -> { throw new AssertionError("cache must be reused"); }, null, 1);
+        assertTrue(bounded.toJSONString().length() < 20000);
+        assertEquals(cursor, bounded.getString("olderCursor"));
+        assertTrue(bounded.getJSONArray("items").getJSONObject(0).getBooleanValue("outputTruncated"));
+        assertEquals("message-0", pages.page("v1", () -> snapshot(2), cursor, 1).getJSONArray("items").getJSONObject(0).getString("messageId"));
+    }
     private JSONObject snapshot(int count) {
         JSONArray items = new JSONArray();
         for (int i = 0; i < count; i++) {

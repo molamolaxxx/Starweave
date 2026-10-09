@@ -24,6 +24,24 @@ public class StarweaveSessionEventStoreTest {
     public final TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
+    public void boundsToolHistoryAndRealtimeWithoutChangingDurableOriginal() throws Exception {
+        Path root = temporary.newFolder("tool-previews").toPath();
+        StarweaveSessionEventStore store = new StarweaveSessionEventStore(64, root);
+        String large = String.join("", java.util.Collections.nCopies(100000, "output"));
+        JSONObject payload = new JSONObject(); payload.put("toolCallId", "large-tool");
+        JSONObject update = new JSONObject(); update.put("rawOutput", large); payload.put("update", update);
+        StarweaveSessionEvent event = store.append("group", "session", 1L, "TOOL_CALL_UPDATED", payload);
+        assertTrue(event.toJson().toJSONString().length() < 20000);
+        assertEquals(large, event.getPayload().getJSONObject("update").getString("rawOutput"));
+        StarweaveSessionEventStore restarted = new StarweaveSessionEventStore(64, root);
+        assertEquals(large, restarted.sessionSnapshot("group", "session").getEvents().get(0)
+                .getPayload().getJSONObject("update").getString("rawOutput"));
+        JSONObject page = restarted.historyPage("group", "session", null, 50);
+        assertEquals(1, page.getJSONArray("events").size());
+        assertTrue(page.toJSONString().length() < 20000);
+    }
+
+    @Test
     public void concurrentAppendsPublishOneMonotonicSequenceAndSurviveRestart()
             throws Exception {
         Path root = temporary.newFolder("events").toPath();
