@@ -37,19 +37,15 @@ public class AcpClientSessionQueryTest {
             client.setSessionId("s1");
             assertTrue(client.availableActionTools().contains("search_sessions"));
             assertTrue(client.availableActionTools().contains("read_session_history"));
-            assertTrue(client.availableActionTools().contains("read_session_contexts"));
+            assertFalse(client.availableActionTools().contains("read_session_contexts"));
             JsonObject search = call(url, auth, "search_sessions", args("keyword", "检索"));
             String ref = search.getAsJsonArray("sessions").get(0).getAsJsonObject().get("session_ref").getAsString();
             JsonObject read = call(url, auth, "read_session_history", args("session_ref", ref));
             assertEquals(2, read.getAsJsonArray("messages").size());
             assertEquals("可读取的回复", read.getAsJsonArray("messages").get(1).getAsJsonObject().get("content").getAsString());
             assertFalse(read.toString().contains(root.toString()));
-            JsonObject item = args("session_ref", ref); item.addProperty("message_id", read.getAsJsonArray("messages")
-                    .get(0).getAsJsonObject().get("message_id").getAsString());
-            JsonArray items = new JsonArray(); items.add(item);
-            JsonObject batch = new JsonObject(); batch.add("items", items);
-            assertEquals(2, call(url, auth, "read_session_contexts", batch).getAsJsonArray("contexts")
-                    .get(0).getAsJsonObject().getAsJsonArray("messages").size());
+            assertEquals("main", read.get("scope").getAsString());
+            assertFalse(read.has("before_cursor")); assertFalse(read.has("after_cursor"));
         } finally {
             client.close(); server.stop(0);
         }

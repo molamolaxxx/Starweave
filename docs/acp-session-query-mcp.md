@@ -1,6 +1,6 @@
 # Harness 会话查询 MCP
 
-Harness 在普通及团队成员 ACP client 中提供三个只读工具。查询范围是当前 cmd-proxy 数据目录内的普通会话和团队成员会话，支持已落盘的旧历史、未落盘的活动轮次及团队归档。不跨远程实例查询，不读取其他 Agent 产品自己的原生历史库。
+Harness 在普通及团队成员 ACP client 中提供两个只读工具：search_sessions 搜索，read_session_history 读取。查询范围是当前 cmd-proxy 数据目录内的普通会话和团队成员会话，支持已落盘的旧历史、未落盘的活动轮次及团队归档。不跨远程实例查询，不读取其他 Agent 产品自己的原生历史库。
 
 会话查询不再向 ACP Harness 注入 `<session-query>` 提示词段。使用方法、默认值及返回字段含义由 MCP `tools/list` 的工具 description 和 inputSchema 字段 description 提供。
 
@@ -49,70 +49,50 @@ Harness 在普通及团队成员 ACP client 中提供三个只读工具。查询
 
 ## read_session_history
 
+只需传一个 session_ref，一次读取会话的全部消息。
+
 ```json
-{"session_ref":"opaque-reference","message_id":"message-id"}
+{"session_ref":"opaque-reference"}
 ```
 
 | 入参 | 含义 |
 | --- | --- |
-| session_ref | 必填，搜索返回的会话引用。 |
-| message_id | 可选，读取命中消息及其前后上下文，默认读取最近一页。 |
-| cursor | 可选，原样传入 before_cursor 或 after_cursor，与 message_id 互斥。 |
+| session_ref | 必填，search_sessions 返回的稳定会话引用。唯一入参。 |
 
 ```json
 {
   "session_ref": "opaque-reference",
   "agent": "Cmd Proxy Dev",
-  "scope": "main",
+  "scope": "team",
+  "team_id": "team-001",
+  "member_id": "member-001",
   "messages": [
     {"message_id":"m1","role":"user","content":"请运行测试","partial":false,"origin":"user"},
     {
       "message_id":"m2","role":"tool","tool_name":"exec_command","status":"completed",
       "input":{"cmd":"mvn test"},
-      "output":"测试开始……\n[中间内容已省略]\nBUILD SUCCESS",
+      "output":"测试开始……\\n[中间内容已省略]\\nBUILD SUCCESS",
       "output_truncated":true
     }
-  ],
-  "before_cursor": "opaque-cursor",
-  "after_cursor": null
+  ]
 }
 ```
 
-消息始终正序排列，每页最多 30 条，正文预算 24,000 字符。普通长消息按字符位置续读，保持同一 message_id，partial 表示分段或仍在生成。origin（如有）区分 user/task/channel/talk_to/schedule。
+messages 按时间正序排列，返回全部消息，无分页、游标、锚点或条数预算。普通正文完整返回；partial 仅保留历史中的生成状态，origin（如有）区分 user/task/channel/talk_to/schedule。无消息时返回空数组。
 
-工具调用的更新合并为一条，保留最新非空名称、状态、输入及结果。**input 保留原始完整 JSON，不缩略、不拆分。** 单条工具输入超过页预算时独占一页，允许超过预算。output 是结果的文本预览，最多 2,000 字符，超长保留首尾，内嵌图片和音频 Base64 省略；output_truncated 标记缩略。原始历史不受影响。
+工具调用的更新合并为一条，保留最新非空名称、状态、输入及结果。**input 保留原始完整 JSON，不缩略、不拆分。** 只有 output 使用文本预览，最多 2,000 字符，超长保留首尾，内嵌图片和音频 Base64 省略；output_truncated 标记缩略，原始历史不受影响。工具无结果时 output 为空字符串。
 
-before_cursor/after_cursor 为 null 表示已到对应方向边界。入参可选字段应直接省略，不传 null。工具消息未返回 output 时为空字符串。
-
-## read_session_contexts
-
-```json
-{"items":[{"session_ref":"opaque-reference","message_id":"message-id"}]}
-```
-
-items 必填，包含 1 到 10 个位置，每项必须包含 session_ref、message_id。一次发现会话，同一会话的多个位置共用一次历史读取。按入参顺序返回，默认命中消息前 2 条、后 3 条，包含工具消息；历史边界和正文预算可能减少实际条数，命中消息会保留在返回页中。before_cursor、after_cursor 可交给 read_session_history 继续读取完整历史。
-
-```json
-{
-  "contexts": [
-    {"session_ref":"opaque-reference","message_id":"message-id","agent":"Agent","scope":"team","team_id":"team-001","member_id":"member-001","messages":[],"before_cursor":null,"after_cursor":null},
-    {"session_ref":"missing","message_id":"m2","error":{"code":"SESSION_NOT_FOUND","message":"会话不存在或已删除"}}
-  ],
-  "remaining_items": []
-}
-```
-
-每项独立返回错误，不影响其他位置。总返回目标预算为 96 KiB，剩余未返回的请求保留在 remaining_items，原样作为下一次调用的 items；至少返回一项。单条完整工具输入超过预算时允许独占返回，绝不截断输入。工具结果仍使用 read_session_history 的缩略规则。非法请求结构通过 MCP isError=true 返回 INVALID_ARGUMENT；逐项读取失败则在 contexts 对应项内返回 error。
+read_session_contexts 已移除；read_session_history 不再接受 message_id、cursor 或 items。会话不存在或读取失败时通过 MCP isError=true 返回 error.code、error.message。
 
 ## 身份、存储及错误
 
 session_ref 基于历史命名空间和会话 ID 生成不透明稳定引用，团队归档保留相同引用。所有正常返回均不暴露物理路径；调用者不能传目录读取文件。新增 query-owner.json 随历史保存 Agent 名称和作用域，兼容旧 turn 文件；没有元数据的离线旧记录先以目录名识别，所属 client 启动后恢复准确名称。
 
-搜索、单条历史及批量上下文结果均返回 scope。普通 ACP 和 Starweave 普通会话返回 main，省略 team_id、member_id；Team 会话返回 team，并携带其 team_id 和 member_id。活动会话和团队归档保持相同归属；批量读取中已识别会话的逐项错误也包含归属，无法识别的 session_ref 不推测归属。归属取自规范会话命名空间，session_ref 不因新增字段改变。筛选条件与 agent、days 共同生效；查询其他团队成员时通常需要 agent=all 或准确源 Agent 名称，self 仍只覆盖当前身份的命名空间。
+搜索和完整历史读取结果均返回 scope。普通 ACP 和 Starweave 普通会话返回 main，省略 team_id、member_id；Team 会话返回 team，并携带其 team_id 和 member_id。活动会话和团队归档保持相同归属；归属取自规范会话命名空间，session_ref 不因新增字段改变。筛选条件与 agent、days 共同生效；查询其他团队成员时通常需要 agent=all 或准确源 Agent 名称，self 仍只覆盖当前身份的命名空间。
 
-历史文件是事实来源。查询使用有大小上限的 turn 解析缓存，文件变化时失效；首次搜索仍需枚举本实例历史，尚未引入独立全文索引。不同会话通过实例共享的最多 4 个扫描线程并发处理，会话内顺序及最终排序保持不变。扫描队列有上限，过载时返回 SEARCH_BUSY；失败或中断会取消本次查询的剩余扫描任务。工具结果的关键词检索使用未缩略的文本投影，仅排除明确的二进制内容，搜索阶段不生成读取预览；只有读取历史时才缩略结果。为避免历史查询副本污染搜索，三个查询工具自身的调用及结果不参与关键词匹配，但仍可在历史中读取。
+历史文件是事实来源。查询使用有大小上限的 turn 解析缓存，文件变化时失效；首次搜索仍需枚举本实例历史，尚未引入独立全文索引。不同会话通过实例共享的最多 4 个扫描线程并发处理，会话内顺序及最终排序保持不变。扫描队列有上限，过载时返回 SEARCH_BUSY；失败或中断会取消本次查询的剩余扫描任务。工具结果的关键词检索使用未缩略的文本投影，仅排除明确的二进制内容，搜索阶段不生成读取预览；只有读取历史时才缩略结果。为避免历史查询副本污染搜索，查询工具（含已移除的旧批量工具）自身的调用及结果不参与关键词匹配，但仍可在历史中读取。
 
-游标绑定实例数据目录、调用者和查询条件，有效期 15 分钟。重启、搜索快照过期或淘汰、读取锚点内容发生变化后，需要重新查询；游标带签名，不能由调用者修改翻页位置。client 关闭时清理所属搜索快照。
+游标绑定实例数据目录、调用者和查询条件，有效期 15 分钟。重启、搜索快照过期或淘汰后，需要重新查询；游标带签名，不能由调用者修改翻页位置。client 关闭时清理所属搜索快照。
 
 业务错误通过 MCP isError=true 返回 JSON：
 

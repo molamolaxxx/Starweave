@@ -132,6 +132,29 @@ public class ConversationQueryUpgradeTest {
         assertEquals("m11", after.get(0).getAsJsonObject().get("message_id").getAsString());
     }
 
+    @Test public void readsAllMessagesWithoutPagingAndOnlyShortensToolResults() throws Exception {
+        JsonObject[] rows = new JsonObject[61];
+        String longText = String.join("", Collections.nCopies(40000, "字"));
+        for (int i = 0; i < 60; i++) rows[i] = row("USER", "m" + i, i == 0 ? longText : "needle " + i);
+        JsonObject input = object("script", String.join("", Collections.nCopies(150000, "x")));
+        rows[60] = object("role", "TOOL", "messageId", "t", "toolCallId", "c", "toolName", "exec");
+        rows[60].add("rawInput", input);
+        rows[60].add("rawOutput", object("text", String.join("", Collections.nCopies(8000, "y"))));
+        write("s", rows); String ref = ref(search("needle"));
+        JsonObject result = json(query.readHistory(object("session_ref", ref)));
+        JsonArray messages = result.getAsJsonArray("messages");
+        assertEquals(61, messages.size());
+        assertEquals(longText, messages.get(0).getAsJsonObject().get("content").getAsString());
+        for (int i = 0; i < 60; i++) assertEquals("m" + i, messages.get(i).getAsJsonObject().get("message_id").getAsString());
+        JsonObject tool = messages.get(60).getAsJsonObject();
+        assertEquals(input, tool.get("input")); assertTrue(tool.get("output_truncated").getAsBoolean());
+        assertTrue(tool.get("output").getAsString().length() <= 2000);
+        assertFalse(result.has("before_cursor")); assertFalse(result.has("after_cursor"));
+        error("INVALID_ARGUMENT", () -> query.readHistory(object("session_ref", ref, "message_id", "m1")));
+        error("INVALID_ARGUMENT", () -> query.readHistory(new JsonObject()));
+        error("SESSION_NOT_FOUND", () -> query.readHistory(object("session_ref", "missing")));
+    }
+
     @Test public void batchKeepsOversizedInputAndDefersRemainingItems() throws Exception {
         JsonObject input = object("script", String.join("", Collections.nCopies(150000, "x")));
         JsonObject tool = object("role", "TOOL", "messageId", "t", "toolCallId", "c", "toolName", "exec");

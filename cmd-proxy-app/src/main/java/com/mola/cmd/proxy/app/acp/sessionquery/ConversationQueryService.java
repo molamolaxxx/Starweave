@@ -225,7 +225,27 @@ public final class ConversationQueryService implements AutoCloseable {
 
     private static String filterName(JsonObject args) { return value(args, "agent").trim(); }
 
-    public String read(JsonObject arguments) {
+    public String readHistory(JsonObject arguments) {
+        validate(arguments, "session_ref");
+        String ref = value(arguments, "session_ref");
+        if (ref.isEmpty()) throw failure("INVALID_ARGUMENT", "session_ref 必填");
+        try {
+            Session session = discover().stream().filter(s -> s.ref.equals(ref)).findFirst()
+                    .orElseThrow(() -> failure("SESSION_NOT_FOUND", "会话不存在或已删除"));
+            JsonObject result = new JsonObject();
+            result.addProperty("session_ref", ref); addIdentity(result, session);
+            JsonArray history = new JsonArray();
+            messages(session, false).forEach(history::add);
+            result.add("messages", history);
+            return result.toString();
+        } catch (QueryException e) { throw e; }
+        catch (Exception e) {
+            LOG.warn("Conversation history read failed", e);
+            throw failure("HISTORY_UNAVAILABLE", "会话历史暂时不可用，请稍后重试");
+        }
+    }
+
+    String read(JsonObject arguments) {
         try { return readInternal(arguments); }
         catch (QueryException e) { throw e; }
         catch (Exception e) {
@@ -325,7 +345,7 @@ public final class ConversationQueryService implements AutoCloseable {
         return result.toString();
     }
 
-    public String readContexts(JsonObject arguments) {
+    String readContexts(JsonObject arguments) {
         if (arguments.size() != 1 || !arguments.has("items") || !arguments.get("items").isJsonArray()
                 || arguments.getAsJsonArray("items").size() < 1 || arguments.getAsJsonArray("items").size() > 10)
             throw failure("INVALID_ARGUMENT", "items 必须为包含 1 到 10 项的数组");

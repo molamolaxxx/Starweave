@@ -34,14 +34,6 @@ public final class ActionToolService {
                              Handler talkTo, Handler newSession, Handler manageObservation,
                              Handler testObservation, Handler queryObservation,
                              Handler searchSessions, Handler readHistory) {
-        this(dispatchSubagent, scheduleTask, manageSchedule, talkTo, newSession, manageObservation,
-                testObservation, queryObservation, searchSessions, readHistory, null);
-    }
-
-    public ActionToolService(Handler dispatchSubagent, Handler scheduleTask, Handler manageSchedule,
-                             Handler talkTo, Handler newSession, Handler manageObservation,
-                             Handler testObservation, Handler queryObservation,
-                             Handler searchSessions, Handler readHistory, Handler readContexts) {
         Map<String, Handler> configured = new LinkedHashMap<>();
         configured.put("dispatch_subagent", dispatchSubagent);
         configured.put("schedule_task", scheduleTask);
@@ -53,7 +45,6 @@ public final class ActionToolService {
         if (queryObservation != null) configured.put("query_observation_events", queryObservation);
         if (searchSessions != null) configured.put("search_sessions", searchSessions);
         if (readHistory != null) configured.put("read_session_history", readHistory);
-        if (readContexts != null) configured.put("read_session_contexts", readContexts);
         handlers = Collections.unmodifiableMap(configured);
     }
 

@@ -50,12 +50,11 @@ public class CmdProxyMcpHttpHandlerTest {
         assertEquals(7, days.get("default").getAsInt());
         assertEquals(0, days.get("minimum").getAsInt());
         assertEquals(50, search.getAsJsonObject("properties").getAsJsonObject("limit").get("default").getAsInt());
-        JsonObject batch = findTool(CmdProxyMcpHttpHandler.tools(), "read_session_contexts").getAsJsonObject("inputSchema");
-        assertEquals("items", batch.getAsJsonArray("required").get(0).getAsString());
         assertEquals(0, search.getAsJsonArray("required").size());
         JsonObject read = findTool(CmdProxyMcpHttpHandler.tools(), "read_session_history").getAsJsonObject("inputSchema");
-        assertEquals(3, read.getAsJsonObject("properties").size());
+        assertEquals(1, read.getAsJsonObject("properties").size());
         assertEquals("session_ref", read.getAsJsonArray("required").get(0).getAsString());
+        assertFalse(CmdProxyMcpHttpHandler.tools().toString().contains("read_session_contexts"));
         ActionRuntimeRegistry.getInstance().register("test-session", (name, arguments) -> {
             throw com.mola.cmd.proxy.app.acp.sessionquery.ConversationQueryService.failure("SESSION_NOT_FOUND", "会话不存在");
         }, () -> java.util.Collections.singleton("read_session_history"));
