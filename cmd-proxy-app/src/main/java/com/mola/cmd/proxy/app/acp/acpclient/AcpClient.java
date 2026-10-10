@@ -235,7 +235,8 @@ public class AcpClient extends AbstractAcpClient {
                 args -> executeMcpObservation("test_observation_script", args),
                 args -> executeMcpObservation("query_observation_events", args),
                 conversationQueryService == null ? null : conversationQueryService::search,
-                conversationQueryService == null ? null : conversationQueryService::read);
+                conversationQueryService == null ? null : conversationQueryService::read,
+                conversationQueryService == null ? null : conversationQueryService::readContexts);
         ActionRuntimeRegistry.getInstance().register(authSessionId,
                 actionToolService::execute, this::availableActionTools);
     }
@@ -1211,6 +1212,7 @@ public class AcpClient extends AbstractAcpClient {
         if (conversationQueryService != null) {
             tools.add("search_sessions");
             tools.add("read_session_history");
+            tools.add("read_session_contexts");
         }
         if (clientIdentity.getScope() == AcpClientIdentity.Scope.MAIN
                 || clientIdentity.isTeam()) tools.add("new_session");

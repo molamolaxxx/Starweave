@@ -37,6 +37,11 @@ public class ConversationQueryServiceTest {
         return result;
     }
     private static JsonObject json(String text) { return JsonParser.parseString(text).getAsJsonObject(); }
+    private static JsonObject roles(JsonObject args, String... roles) {
+        JsonArray array = new JsonArray(); for (String role : roles) array.add(role);
+        args.add("roles", array); return args;
+    }
+    private static JsonObject limit(JsonObject args, int limit) { args.addProperty("limit", limit); return args; }
     private static String ref(JsonObject result) {
         return result.getAsJsonArray("sessions").get(0).getAsJsonObject().get("session_ref").getAsString();
     }
@@ -133,7 +138,7 @@ public class ConversationQueryServiceTest {
                 args("text", repeat("a", 10000) + "UNIQUE_MIDDLE" + repeat("b", 10000)));
         manager.flushTurn("s");
         ConversationQueryService query = service(manager, new AtomicReference<>());
-        JsonObject search = json(query.search(args("keyword", "UNIQUE_MIDDLE")));
+        JsonObject search = json(query.search(roles(args("keyword", "UNIQUE_MIDDLE"), "tool_output")));
         assertEquals(1, search.getAsJsonArray("sessions").size());
         assertTrue(search.toString().contains("UNIQUE_MIDDLE"));
     }
@@ -314,10 +319,10 @@ public class ConversationQueryServiceTest {
         ConversationHistoryManager manager = history("One");
         for (int i = 0; i < 13; i++) { manager.addUserMessage("search " + i); manager.flushTurn("s" + i); }
         ConversationQueryService query = service(manager, new AtomicReference<>());
-        JsonObject first = json(query.search(args("keyword", "search")));
+        JsonObject first = json(query.search(limit(args("keyword", "search"), 10)));
         assertEquals(10, first.getAsJsonArray("sessions").size());
         String cursor = first.get("next_cursor").getAsString();
-        JsonObject second = json(query.search(args("keyword", "search", "cursor", cursor)));
+        JsonObject second = json(query.search(limit(args("keyword", "search", "cursor", cursor), 10)));
         assertEquals(3, second.getAsJsonArray("sessions").size());
         assertTrue(second.get("next_cursor").isJsonNull());
         error("CURSOR_EXPIRED", () -> query.search(args("keyword", "other", "cursor", cursor)));
@@ -337,7 +342,7 @@ public class ConversationQueryServiceTest {
         manager.addToolMessage("query", "mcp__harness__read_session_history", "completed", args("session_ref", "ref"), args("text", "COPIED_HISTORY"));
         manager.flushTurn("s");
         ConversationQueryService query = service(manager, new AtomicReference<>());
-        assertEquals(0, json(query.search(args("keyword", "COPIED_HISTORY"))).getAsJsonArray("sessions").size());
+        assertEquals(0, json(query.search(roles(args("keyword", "COPIED_HISTORY"), "tool"))).getAsJsonArray("sessions").size());
         Path attachment = root.resolve("starweave/robot/s/files/turn_0000.json"); Files.createDirectories(attachment.getParent());
         Files.write(attachment, "[{\"role\":\"USER\",\"content\":\"ATTACHMENT_ONLY\"}]".getBytes(StandardCharsets.UTF_8));
         assertEquals(0, json(query.search(args("agent", "all", "keyword", "ATTACHMENT_ONLY"))).getAsJsonArray("sessions").size());

@@ -134,7 +134,7 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
         return tools(new java.util.LinkedHashSet<>(java.util.Arrays.asList(
                 "dispatch_subagent", "schedule_task", "manage_schedule", "talk_to", "new_session",
                 "manage_observation_channels", "test_observation_script", "query_observation_events",
-                "search_sessions", "read_session_history")));
+                "search_sessions", "read_session_history", "read_session_contexts")));
     }
 
     public static JsonArray tools(Set<String> availableTools) {
@@ -245,12 +245,28 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
         JsonObject days = new JsonObject(); days.addProperty("type", "integer");
         days.addProperty("minimum", 0); days.addProperty("maximum", Integer.MAX_VALUE); days.addProperty("default", 7);
         addProperty(search, "days", described(days, "按会话最后更新时间搜索最近多少天；默认 7，0 表示全部历史。活动会话仍参与搜索，避免遗漏未落盘消息。"));
-        addProperty(search, "cursor", described(stringSchema(), "原样传入 next_cursor，翻页时保持 keyword、agent 和 days 不变。"));
-        if (availableTools.contains("search_sessions")) tools.add(tool("search_sessions", "搜索本实例历史会话，返回 session_ref 和命中 message_id；每页最多 10 个会话，不暴露存储路径。", search));
+        JsonObject role = stringSchema(); JsonArray roleNames = new JsonArray();
+        for (String name : new String[]{"user", "assistant", "tool", "tool_input", "tool_output"}) roleNames.add(name);
+        role.add("enum", roleNames);
+        JsonObject roles = arrayOf(role); roles.addProperty("minItems", 1);
+        JsonArray defaultRoles = new JsonArray(); defaultRoles.add("user"); defaultRoles.add("assistant"); roles.add("default", defaultRoles);
+        addProperty(search, "roles", described(roles, "默认仅搜索 user、assistant；tool_input、tool_output 单独开启工具输入、输出，tool 开启两者。明确的内嵌二进制字段不参与搜索。"));
+        JsonObject limit = new JsonObject(); limit.addProperty("type", "integer"); limit.addProperty("minimum", 1);
+        limit.addProperty("maximum", 50); limit.addProperty("default", 50);
+        addProperty(search, "limit", described(limit, "每页会话数上限，默认 50；达到返回体积预算时可能提前分页。"));
+        addProperty(search, "cursor", described(stringSchema(), "原样传入 next_cursor，保持其他条件不变；翻页复用 15 分钟搜索快照，不重复扫描。"));
+        if (availableTools.contains("search_sessions")) tools.add(tool("search_sessions", "搜索本实例历史会话，默认只搜用户及助手消息；返回最多 50 个会话、total_sessions 和命中片段，不暴露存储路径。", search));
         JsonObject read = objectSchema("session_ref", described(stringSchema(), "搜索返回的稳定会话引用。"));
         addProperty(read, "message_id", described(stringSchema(), "读取指定消息及前后上下文；省略时读取最近一页，与 cursor 互斥。"));
         addProperty(read, "cursor", described(stringSchema(), "原样传入 before_cursor 或 after_cursor，与 message_id 互斥。"));
         if (availableTools.contains("read_session_history")) tools.add(tool("read_session_history", "分页读取会话历史，每页最多 30 条。工具调用输入完整返回，结果过大时缩略；普通长消息可通过游标继续读取。", read));
+        JsonObject items = arrayOf(objectWithRequired(new String[]{"session_ref", "message_id"},
+                objectProperty("session_ref", described(stringSchema(), "搜索返回的会话引用。")),
+                objectProperty("message_id", described(stringSchema(), "搜索命中的消息 ID。"))));
+        items.addProperty("minItems", 1); items.addProperty("maxItems", 10);
+        if (availableTools.contains("read_session_contexts")) tools.add(tool("read_session_contexts",
+                "批量读取 1 到 10 个命中位置的上下文，默认前 2 条、后 3 条；各项独立返回错误。工具输入完整，结果缩略；remaining_items 可继续调用。",
+                objectSchema("items", described(items, "按顺序读取命中位置，支持同一会话的多个消息。"))));
         return tools;
     }
 
@@ -267,7 +283,8 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
                 || "manage_schedule".equals(name) || "talk_to".equals(name)
                 || "new_session".equals(name) || "manage_observation_channels".equals(name)
                 || "test_observation_script".equals(name) || "query_observation_events".equals(name)
-                || "search_sessions".equals(name) || "read_session_history".equals(name);
+                || "search_sessions".equals(name) || "read_session_history".equals(name)
+                || "read_session_contexts".equals(name);
     }
 
     private static JsonObject tool(String name, String description, JsonObject schema) {
