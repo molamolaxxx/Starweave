@@ -2,6 +2,8 @@
 
 Harness 在普通及团队成员 ACP client 中提供三个只读工具。查询范围是当前 cmd-proxy 数据目录内的普通会话和团队成员会话，支持已落盘的旧历史、未落盘的活动轮次及团队归档。不跨远程实例查询，不读取其他 Agent 产品自己的原生历史库。
 
+会话查询不再向 ACP Harness 注入 `<session-query>` 提示词段。使用方法、默认值及返回字段含义由 MCP `tools/list` 的工具 description 和 inputSchema 字段 description 提供。
+
 同一实例内的这两类会话允许互查；`agent` 是筛选条件，不是授权字段。内部记忆、能力提取等已标记的非对话作用域不开放。沿用 Harness 的会话认证和 loopback HTTP 入口。
 
 ## search_sessions
@@ -14,16 +16,22 @@ Harness 在普通及团队成员 ACP client 中提供三个只读工具。查询
 | --- | --- |
 | keyword | 可选，匹配 roles 指定范围内的消息；为空时列出最近会话。空白分隔的多个关键词须在同一搜索字段内全部匹配，英文不区分大小写。展示标题不能绕过角色过滤。 |
 | agent | 可选，默认 self，查询当前会话身份所属的历次会话。all 查询本实例全部开放会话，也可填准确的源 Agent 名称，覆盖其普通及团队成员记录。 |
+| scope | 可选，默认 all。main 只查询普通会话，team 只查询 Team 成员会话。 |
+| team_id | 可选，按准确团队 ID 筛选，仅匹配 Team 会话；不能与 scope=main 同时使用。 |
+| member_id | 可选，按准确团队成员 ID 筛选，仅匹配 Team 会话；可与 team_id 联合定位，也可跨团队查询同一成员 ID；不能与 scope=main 同时使用。 |
 | days | 可选，非负整数，默认 7，按会话最后落盘更新时间搜索最近多少天；0 表示全部历史。活动会话始终参与搜索，避免遗漏未落盘消息。范围限定会话，不裁剪命中会话内部的旧消息。 |
 | roles | 可选，非空数组，默认 ["user", "assistant"]。tool_input、tool_output 分别搜索工具输入、输出，tool 同时开启两者。作用于搜索本身，不只是返回结果。user 包含历史中标记为用户角色的普通输入及任务、渠道等输入。 |
 | limit | 可选，1 到 50 的整数，默认 50。受到搜索返回体积预算约束，实际每页可能少于此上限。 |
-| cursor | 可选，原样传入 next_cursor，保持 keyword、agent、days、roles、limit 不变；roles 顺序及 tool 的等价写法不影响绑定。 |
+| cursor | 可选，原样传入 next_cursor，保持 keyword、agent、days、roles、limit、scope、team_id、member_id 不变；roles 顺序及 tool 的等价写法不影响绑定。 |
 
 ```json
 {
   "sessions": [{
     "session_ref": "opaque-reference",
     "agent": "Cmd Proxy Dev",
+    "scope": "team",
+    "team_id": "team-001",
+    "member_id": "member-001",
     "title": "注册中心反向隧道改造",
     "updated_at": "2026-10-10T15:00:00Z",
     "matches": [{"message_id":"message-id","role":"user","source":"user","snippet":"反向隧道的讨论片段"}]
@@ -55,6 +63,7 @@ Harness 在普通及团队成员 ACP client 中提供三个只读工具。查询
 {
   "session_ref": "opaque-reference",
   "agent": "Cmd Proxy Dev",
+  "scope": "main",
   "messages": [
     {"message_id":"m1","role":"user","content":"请运行测试","partial":false,"origin":"user"},
     {
@@ -86,7 +95,7 @@ items 必填，包含 1 到 10 个位置，每项必须包含 session_ref、mess
 ```json
 {
   "contexts": [
-    {"session_ref":"opaque-reference","message_id":"message-id","agent":"Agent","messages":[],"before_cursor":null,"after_cursor":null},
+    {"session_ref":"opaque-reference","message_id":"message-id","agent":"Agent","scope":"team","team_id":"team-001","member_id":"member-001","messages":[],"before_cursor":null,"after_cursor":null},
     {"session_ref":"missing","message_id":"m2","error":{"code":"SESSION_NOT_FOUND","message":"会话不存在或已删除"}}
   ],
   "remaining_items": []
@@ -98,6 +107,8 @@ items 必填，包含 1 到 10 个位置，每项必须包含 session_ref、mess
 ## 身份、存储及错误
 
 session_ref 基于历史命名空间和会话 ID 生成不透明稳定引用，团队归档保留相同引用。所有正常返回均不暴露物理路径；调用者不能传目录读取文件。新增 query-owner.json 随历史保存 Agent 名称和作用域，兼容旧 turn 文件；没有元数据的离线旧记录先以目录名识别，所属 client 启动后恢复准确名称。
+
+搜索、单条历史及批量上下文结果均返回 scope。普通 ACP 和 Starweave 普通会话返回 main，省略 team_id、member_id；Team 会话返回 team，并携带其 team_id 和 member_id。活动会话和团队归档保持相同归属；批量读取中已识别会话的逐项错误也包含归属，无法识别的 session_ref 不推测归属。归属取自规范会话命名空间，session_ref 不因新增字段改变。筛选条件与 agent、days 共同生效；查询其他团队成员时通常需要 agent=all 或准确源 Agent 名称，self 仍只覆盖当前身份的命名空间。
 
 历史文件是事实来源。查询使用有大小上限的 turn 解析缓存，文件变化时失效；首次搜索仍需枚举本实例历史，尚未引入独立全文索引。不同会话通过实例共享的最多 4 个扫描线程并发处理，会话内顺序及最终排序保持不变。扫描队列有上限，过载时返回 SEARCH_BUSY；失败或中断会取消本次查询的剩余扫描任务。工具结果的关键词检索使用未缩略的文本投影，仅排除明确的二进制内容，搜索阶段不生成读取预览；只有读取历史时才缩略结果。为避免历史查询副本污染搜索，三个查询工具自身的调用及结果不参与关键词匹配，但仍可在历史中读取。
 

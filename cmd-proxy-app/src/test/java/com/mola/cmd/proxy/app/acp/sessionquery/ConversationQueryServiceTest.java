@@ -315,6 +315,61 @@ public class ConversationQueryServiceTest {
         assertEquals(0, json(query.search(args("agent", "all", "keyword", "SECRET"))).getAsJsonArray("sessions").size());
     }
 
+    @Test public void searchesAndReadsTeamIdentityAcrossLiveAndArchivedSessions() throws Exception {
+        ConversationHistoryManager main = history("One");
+        main.addUserMessage("shared requirement"); main.flushTurn("main");
+        ConversationQueryService query = service(main, new AtomicReference<>());
+        for (String member : Arrays.asList("m1", "m2")) {
+            ConversationHistoryManager team = new ConversationHistoryManager(AcpClientIdentity.team(
+                    "t1-" + member, "group-" + member, "team/t1/" + member, "owner", "t1", member, "One"), root);
+            team.addUserMessage("shared requirement"); team.flushTurn("disk");
+        }
+        ConversationHistoryManager live = new ConversationHistoryManager(AcpClientIdentity.team(
+                "t2-m1", "live-group", "team/t2/m1", "owner", "t2", "m1", "One"), root);
+        live.addUserMessage("shared requirement"); service(live, new AtomicReference<>("active"));
+        JsonObject all = json(query.search(args("agent", "all", "keyword", "shared")));
+        assertEquals(4, all.get("total_sessions").getAsInt());
+        JsonObject normal = json(query.search(args("agent", "all", "scope", "main", "keyword", "shared")));
+        assertEquals(1, normal.get("total_sessions").getAsInt());
+        JsonObject mainHit = normal.getAsJsonArray("sessions").get(0).getAsJsonObject();
+        assertEquals("main", mainHit.get("scope").getAsString());
+        assertFalse(mainHit.has("team_id")); assertFalse(mainHit.has("member_id"));
+        assertEquals("main", json(query.read(args("session_ref", ref(normal)))).get("scope").getAsString());
+        assertEquals(3, json(query.search(args("agent", "all", "scope", "team", "keyword", "shared"))).get("total_sessions").getAsInt());
+        assertEquals(2, json(query.search(args("agent", "all", "member_id", "m1", "keyword", "shared"))).get("total_sessions").getAsInt());
+        JsonObject teamSearch = json(query.search(args("agent", "all", "team_id", "t1", "member_id", "m1", "keyword", "shared")));
+        assertEquals(1, teamSearch.get("total_sessions").getAsInt());
+        String teamRef = ref(teamSearch);
+        JsonObject teamHit = teamSearch.getAsJsonArray("sessions").get(0).getAsJsonObject();
+        assertEquals("team", teamHit.get("scope").getAsString());
+        assertEquals("t1", teamHit.get("team_id").getAsString()); assertEquals("m1", teamHit.get("member_id").getAsString());
+        Path archive = root.resolveSibling("team-archive"); Files.createDirectories(archive);
+        Files.move(root.resolve("team/t1"), archive.resolve("t1"));
+        assertEquals(teamRef, ref(json(query.search(args("agent", "all", "team_id", "t1", "member_id", "m1", "keyword", "shared")))));
+        JsonObject read = json(query.read(args("session_ref", teamRef)));
+        assertEquals("team", read.get("scope").getAsString()); assertEquals("t1", read.get("team_id").getAsString());
+        JsonArray items = new JsonArray();
+        items.add(args("session_ref", teamRef, "message_id", read.getAsJsonArray("messages").get(0).getAsJsonObject().get("message_id").getAsString()));
+        items.add(args("session_ref", teamRef, "message_id", "missing"));
+        JsonObject batch = new JsonObject(); batch.add("items", items);
+        for (JsonElement context : json(query.readContexts(batch)).getAsJsonArray("contexts")) {
+            assertEquals("team", context.getAsJsonObject().get("scope").getAsString());
+            assertEquals("t1", context.getAsJsonObject().get("team_id").getAsString());
+            assertEquals("m1", context.getAsJsonObject().get("member_id").getAsString());
+        }
+        JsonObject first = json(query.search(limit(args("agent", "all", "keyword", "shared"), 1)));
+        String cursor = first.get("next_cursor").getAsString();
+        for (String field : Arrays.asList("scope", "team_id", "member_id")) {
+            JsonObject changed = limit(args("agent", "all", "keyword", "shared", "cursor", cursor), 1);
+            changed.addProperty(field, "scope".equals(field) ? "team" : "t1");
+            error("CURSOR_EXPIRED", () -> query.search(changed));
+        }
+        error("INVALID_ARGUMENT", () -> query.search(args("scope", "other")));
+        error("INVALID_ARGUMENT", () -> query.search(args("scope", "main", "team_id", "t1")));
+        error("INVALID_ARGUMENT", () -> query.search(args("scope", "main", "member_id", "m1")));
+        assertEquals(0, json(query.search(args("agent", "all", "team_id", "unknown"))).get("total_sessions").getAsInt());
+    }
+
     @Test public void searchPaginationCursorBindingAndInvalidArguments() throws Exception {
         ConversationHistoryManager manager = history("One");
         for (int i = 0; i < 13; i++) { manager.addUserMessage("search " + i); manager.flushTurn("s" + i); }

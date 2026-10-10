@@ -43,7 +43,8 @@ public class CmdProxyMcpHttpHandlerTest {
     @Test
     public void advertisesMinimalSessionQuerySchemasAndPreservesStructuredErrors() throws Exception {
         JsonObject search = findTool(CmdProxyMcpHttpHandler.tools(), "search_sessions").getAsJsonObject("inputSchema");
-        assertEquals(6, search.getAsJsonObject("properties").size());
+        assertEquals(9, search.getAsJsonObject("properties").size());
+        assertEquals("all", search.getAsJsonObject("properties").getAsJsonObject("scope").get("default").getAsString());
         JsonObject days = search.getAsJsonObject("properties").getAsJsonObject("days");
         assertEquals("integer", days.get("type").getAsString());
         assertEquals(7, days.get("default").getAsInt());

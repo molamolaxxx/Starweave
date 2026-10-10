@@ -1364,7 +1364,6 @@ public class AcpClient extends AbstractAcpClient {
             }
 
             // 注入子 Agent 上下文
-            if (conversationQueryService != null) fullTextBuilder.append(ConversationQueryService.CONTEXT).append("\n");
             if (subAgentContextInjector != null && robotParam != null
                     && robotParam.hasSubAgents() && globalRobotRegistry != null) {
                 try {
