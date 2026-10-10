@@ -52,6 +52,9 @@ public class ConversationHistoryManager {
 
     /** 按 workspacePath 隔离的 session 基础目录 */
     private final Path sessionBaseDir;
+    private final Path sessionRootDir;
+    private final String queryAgentName;
+    private final String queryScope;
 
     /** 当前 turn 的上下文消息，flushTurn 后清空 */
     private final List<ContextMessage> currentTurn = new ArrayList<>();
@@ -132,6 +135,9 @@ public class ConversationHistoryManager {
     public ConversationHistoryManager(String robotName) {
         String dirName = PathUtils.sanitizePath(robotName);
         this.sessionBaseDir = SESSION_ROOT_DIR.resolve(dirName);
+        this.sessionRootDir = SESSION_ROOT_DIR.toAbsolutePath().normalize();
+        this.queryAgentName = robotName;
+        this.queryScope = "MAIN";
     }
 
     /**
@@ -148,6 +154,48 @@ public class ConversationHistoryManager {
     public ConversationHistoryManager(AcpClientIdentity identity, Path sessionRootDir) {
         Objects.requireNonNull(identity, "identity");
         this.sessionBaseDir = resolveHistoryNamespace(identity, sessionRootDir);
+        this.sessionRootDir = sessionRootDir.toAbsolutePath().normalize();
+        this.queryAgentName = identity.getSourceRobotName() == null
+                ? identity.getLogicalId() : identity.getSourceRobotName();
+        this.queryScope = identity.getScope().name();
+    }
+
+    public Path getQueryRoot() { return sessionRootDir; }
+    public Path getQueryNamespace() { return sessionBaseDir.toAbsolutePath().normalize(); }
+    public String getQueryAgentName() { return queryAgentName; }
+
+    /** Persist ownership alongside history, including after the client is removed or archived. */
+    private void saveQueryOwner() {
+        try {
+            writeQueryOwner();
+        } catch (IOException e) {
+            logger.warn("会话查询身份记录失败，继续保存原始历史", e);
+        }
+    }
+
+    private void writeQueryOwner() throws IOException {
+        Files.createDirectories(sessionBaseDir);
+        JsonObject owner = new JsonObject();
+        owner.addProperty("agent", queryAgentName);
+        owner.addProperty("scope", queryScope);
+        Path temporary = Files.createTempFile(sessionBaseDir, "query-owner-", ".tmp");
+        try {
+            Files.write(temporary, PRETTY_GSON.toJson(owner).getBytes(StandardCharsets.UTF_8));
+            Files.move(temporary, sessionBaseDir.resolve("query-owner.json"), StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    /** Only called for the client's verified current session; old sessions use disk-only reads. */
+    public synchronized JsonArray queryCurrentHistory(String sessionId) {
+        JsonArray result = new JsonArray();
+        for (ContextMessage message : getUiHistory(sessionId)) {
+            JsonObject row = serializeMessage(message);
+            if (message == streamingAssistant) row.addProperty("partial", true);
+            result.add(row);
+        }
+        return result;
     }
 
     static Path resolveHistoryNamespace(AcpClientIdentity identity) {
@@ -450,6 +498,8 @@ public class ConversationHistoryManager {
         try {
             Path sessionDir = sessionBaseDir.resolve(sessionId);
             Files.createDirectories(sessionDir);
+
+            saveQueryOwner();
 
             int turn = turnCounter.getAndIncrement();
             Path turnFile = sessionDir.resolve(String.format("turn_%04d.json", turn));
@@ -810,6 +860,7 @@ public class ConversationHistoryManager {
             if (sessionId == null) return;
             try {
                 Files.createDirectories(sessionBaseDir);
+                saveQueryOwner();
                 Path marker = sessionBaseDir.resolve("last_session");
                 Files.write(marker, sessionId.getBytes(StandardCharsets.UTF_8));
                 logger.info("已记录最新 sessionId: {}", sessionId);

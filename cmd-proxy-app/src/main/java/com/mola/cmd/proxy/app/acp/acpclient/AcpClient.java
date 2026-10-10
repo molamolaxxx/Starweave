@@ -4,6 +4,7 @@ import com.google.gson.*;
 import com.mola.cmd.proxy.app.acp.AcpRobotParam;
 import com.mola.cmd.proxy.app.acp.AutoNewSessionConfig;
 import com.mola.cmd.proxy.app.acp.action.ActionRuntimeRegistry;
+import com.mola.cmd.proxy.app.acp.sessionquery.ConversationQueryService;
 import com.mola.cmd.proxy.app.acp.action.ActionToolService;
 import com.mola.cmd.proxy.app.acp.action.CmdProxyMcpHttpHandler;
 import com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProvider;
@@ -181,6 +182,7 @@ public class AcpClient extends AbstractAcpClient {
 
     /** Codex/Claude/Kiro 压缩完成后置为 true，下一次 prompt 完整重注入 ACP harness。 */
     private final AtomicBoolean acpHarnessReinjectionPending = new AtomicBoolean(false);
+    private final ConversationQueryService conversationQueryService;
 
     /** 当前 provider 是否已报告上下文压缩开始。 */
     private boolean compactionInProgress;
@@ -219,6 +221,10 @@ public class AcpClient extends AbstractAcpClient {
         this.mcpConfigPaths = agentProvider.getMcpConfigPaths(this.workspacePath, robotParam);
         this.authSessionId = McpAuthManager.getInstance().createSession(
                 clientIdentity.getTransportGroup());
+        this.conversationQueryService = clientIdentity.getScope() == AcpClientIdentity.Scope.MAIN || clientIdentity.isTeam()
+                ? new ConversationQueryService(historyManager.getQueryRoot(), historyManager.getQueryNamespace(),
+                    historyManager.getQueryAgentName(), this::getSessionId,
+                    () -> historyManager.queryCurrentHistory(getSessionId())) : null;
         ActionToolService actionToolService = new ActionToolService(
                 this::executeMcpDispatchSubagent,
                 args -> executeMcpSchedule("schedule_task", args),
@@ -227,7 +233,9 @@ public class AcpClient extends AbstractAcpClient {
                 this::executeMcpNewSession,
                 args -> executeMcpObservation("manage_observation_channels", args),
                 args -> executeMcpObservation("test_observation_script", args),
-                args -> executeMcpObservation("query_observation_events", args));
+                args -> executeMcpObservation("query_observation_events", args),
+                conversationQueryService == null ? null : conversationQueryService::search,
+                conversationQueryService == null ? null : conversationQueryService::read);
         ActionRuntimeRegistry.getInstance().register(authSessionId,
                 actionToolService::execute, this::availableActionTools);
     }
@@ -1123,6 +1131,7 @@ public class AcpClient extends AbstractAcpClient {
 
             releaseAllPendingChannelReplies();
             ActionRuntimeRegistry.getInstance().unregister(authSessionId);
+            if (conversationQueryService != null) conversationQueryService.close();
             if (observationManager != null && observationOwner != null)
                 observationManager.unregister(this, observationOwner);
             McpAuthManager.getInstance().removeSession(authSessionId);
@@ -1199,6 +1208,10 @@ public class AcpClient extends AbstractAcpClient {
 
     Set<String> availableActionTools() {
         LinkedHashSet<String> tools = new LinkedHashSet<>();
+        if (conversationQueryService != null) {
+            tools.add("search_sessions");
+            tools.add("read_session_history");
+        }
         if (clientIdentity.getScope() == AcpClientIdentity.Scope.MAIN
                 || clientIdentity.isTeam()) tools.add("new_session");
         if (subAgentDispatcher != null) tools.add("dispatch_subagent");
@@ -1349,6 +1362,7 @@ public class AcpClient extends AbstractAcpClient {
             }
 
             // 注入子 Agent 上下文
+            if (conversationQueryService != null) fullTextBuilder.append(ConversationQueryService.CONTEXT).append("\n");
             if (subAgentContextInjector != null && robotParam != null
                     && robotParam.hasSubAgents() && globalRobotRegistry != null) {
                 try {

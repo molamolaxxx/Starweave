@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.mola.cmd.proxy.app.acp.sessionquery.ConversationQueryService;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -79,6 +80,12 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
                 default:
                     response = error(id, -32601, "Method not found: " + method);
             }
+        } catch (ConversationQueryService.QueryException e) {
+            JsonObject body = new JsonObject();
+            JsonObject detail = new JsonObject();
+            detail.addProperty("code", e.code); detail.addProperty("message", e.getMessage());
+            body.add("error", detail);
+            response = success(id, toolError(body.toString()));
         } catch (Exception e) {
             response = success(id, toolError(e.getMessage()));
         }
@@ -126,7 +133,8 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
     public static JsonArray tools() {
         return tools(new java.util.LinkedHashSet<>(java.util.Arrays.asList(
                 "dispatch_subagent", "schedule_task", "manage_schedule", "talk_to", "new_session",
-                "manage_observation_channels", "test_observation_script", "query_observation_events")));
+                "manage_observation_channels", "test_observation_script", "query_observation_events",
+                "search_sessions", "read_session_history")));
     }
 
     public static JsonArray tools(Set<String> availableTools) {
@@ -231,6 +239,15 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
         addProperty(events, "event_id", described(stringSchema(), "事件 ID，提供时返回完整明细，否则返回分页预览。"));
         addObservationPageProperties(events);
         if (availableTools.contains("query_observation_events")) tools.add(tool("query_observation_events", "查询当前 Agent 的观测事件及完整明细。", events));
+        JsonObject search = objectWithRequired(new String[]{});
+        addProperty(search, "keyword", described(stringSchema(), "搜索标题和消息正文；省略或为空时列出最近会话。多个空白分隔关键词须全部匹配。"));
+        addProperty(search, "agent", described(stringSchema(), "self 查询自身历次会话（默认），all 查询本实例普通及团队成员会话，也可填写准确 Agent 名称。"));
+        addProperty(search, "cursor", described(stringSchema(), "原样传入 next_cursor，翻页时保持 keyword 和 agent 不变。"));
+        if (availableTools.contains("search_sessions")) tools.add(tool("search_sessions", "搜索本实例历史会话，返回 session_ref 和命中 message_id；每页最多 10 个会话，不暴露存储路径。", search));
+        JsonObject read = objectSchema("session_ref", described(stringSchema(), "搜索返回的稳定会话引用。"));
+        addProperty(read, "message_id", described(stringSchema(), "读取指定消息及前后上下文；省略时读取最近一页，与 cursor 互斥。"));
+        addProperty(read, "cursor", described(stringSchema(), "原样传入 before_cursor 或 after_cursor，与 message_id 互斥。"));
+        if (availableTools.contains("read_session_history")) tools.add(tool("read_session_history", "分页读取会话历史，每页最多 30 条。工具调用输入完整返回，结果过大时缩略；普通长消息可通过游标继续读取。", read));
         return tools;
     }
 
@@ -246,7 +263,8 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
         return "dispatch_subagent".equals(name) || "schedule_task".equals(name)
                 || "manage_schedule".equals(name) || "talk_to".equals(name)
                 || "new_session".equals(name) || "manage_observation_channels".equals(name)
-                || "test_observation_script".equals(name) || "query_observation_events".equals(name);
+                || "test_observation_script".equals(name) || "query_observation_events".equals(name)
+                || "search_sessions".equals(name) || "read_session_history".equals(name);
     }
 
     private static JsonObject tool(String name, String description, JsonObject schema) {

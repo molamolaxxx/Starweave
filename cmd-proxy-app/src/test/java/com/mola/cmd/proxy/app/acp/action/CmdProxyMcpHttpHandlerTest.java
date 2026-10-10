@@ -41,6 +41,26 @@ public class CmdProxyMcpHttpHandlerTest {
     }
 
     @Test
+    public void advertisesMinimalSessionQuerySchemasAndPreservesStructuredErrors() throws Exception {
+        JsonObject search = findTool(CmdProxyMcpHttpHandler.tools(), "search_sessions").getAsJsonObject("inputSchema");
+        assertEquals(3, search.getAsJsonObject("properties").size());
+        assertEquals(0, search.getAsJsonArray("required").size());
+        JsonObject read = findTool(CmdProxyMcpHttpHandler.tools(), "read_session_history").getAsJsonObject("inputSchema");
+        assertEquals(3, read.getAsJsonObject("properties").size());
+        assertEquals("session_ref", read.getAsJsonArray("required").get(0).getAsString());
+        ActionRuntimeRegistry.getInstance().register("test-session", (name, arguments) -> {
+            throw com.mola.cmd.proxy.app.acp.sessionquery.ConversationQueryService.failure("SESSION_NOT_FOUND", "会话不存在");
+        }, () -> java.util.Collections.singleton("read_session_history"));
+        JsonObject response = post("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+                + "\"params\":{\"name\":\"read_session_history\",\"arguments\":{\"session_ref\":\"missing\"}}}",
+                "application/json", "test-session");
+        JsonObject result = response.getAsJsonObject("result");
+        assertTrue(result.get("isError").getAsBoolean());
+        JsonObject body = JsonParser.parseString(result.getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
+        assertEquals("SESSION_NOT_FOUND", body.getAsJsonObject("error").get("code").getAsString());
+    }
+
+    @Test
     public void exposesObservationActionAsIndependentChannelField() {
         JsonObject tool = findTool(CmdProxyMcpHttpHandler.tools(), "manage_observation_channels");
         JsonObject properties = tool.getAsJsonObject("inputSchema").getAsJsonObject("properties");
