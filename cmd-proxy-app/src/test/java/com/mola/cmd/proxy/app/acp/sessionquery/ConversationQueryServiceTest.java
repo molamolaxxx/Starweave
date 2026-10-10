@@ -64,6 +64,23 @@ public class ConversationQueryServiceTest {
         error("AGENT_NOT_FOUND", () -> query.search(args("agent", "missing")));
     }
 
+    @Test public void unownedLegacyHistoryDoesNotBreakSearchOrRead() throws Exception {
+        Path legacy = Files.createDirectories(root.resolve("legacy-session"));
+        Files.write(legacy.resolve("turn_1.json"), "[]".getBytes(StandardCharsets.UTF_8));
+        ConversationHistoryManager manager = history("One");
+        manager.addUserMessage("之痕"); manager.flushTurn("owned-session");
+        ConversationQueryService query = service(manager, new AtomicReference<>());
+        for (JsonObject arguments : Arrays.asList(args("agent", "all"),
+                args("agent", "all", "keyword", "之痕"), args("keyword", "之痕"))) {
+            JsonObject result = json(query.search(arguments));
+            assertEquals(1, result.getAsJsonArray("sessions").size());
+            JsonObject read = json(query.read(args("session_ref", ref(result))));
+            assertEquals("之痕", read.getAsJsonArray("messages").get(0)
+                    .getAsJsonObject().get("content").getAsString());
+        }
+        assertTrue(Files.exists(legacy.resolve("turn_1.json")));
+    }
+
     @Test public void completeLargeToolInputAndMergedOutputPreviewDoNotChangeRawHistory() throws Exception {
         ConversationHistoryManager manager = history("One");
         JsonObject input = args("script", repeat("输入🧵", 15000));

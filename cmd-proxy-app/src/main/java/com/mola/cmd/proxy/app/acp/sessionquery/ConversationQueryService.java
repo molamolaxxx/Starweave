@@ -55,7 +55,10 @@ public final class ConversationQueryService implements AutoCloseable {
     public String search(JsonObject arguments) {
         try { return searchInternal(arguments); }
         catch (QueryException e) { throw e; }
-        catch (Exception e) { throw failure("HISTORY_UNAVAILABLE", "会话历史暂时不可用，请稍后重试"); }
+        catch (Exception e) {
+            LOG.warn("Conversation search failed", e);
+            throw failure("HISTORY_UNAVAILABLE", "会话历史暂时不可用，请稍后重试");
+        }
     }
 
     private String searchInternal(JsonObject arguments) throws Exception {
@@ -121,7 +124,10 @@ public final class ConversationQueryService implements AutoCloseable {
     public String read(JsonObject arguments) {
         try { return readInternal(arguments); }
         catch (QueryException e) { throw e; }
-        catch (Exception e) { throw failure("HISTORY_UNAVAILABLE", "会话历史暂时不可用，请稍后重试"); }
+        catch (Exception e) {
+            LOG.warn("Conversation history read failed", e);
+            throw failure("HISTORY_UNAVAILABLE", "会话历史暂时不可用，请稍后重试");
+        }
     }
 
     private String readInternal(JsonObject arguments) throws Exception {
@@ -248,7 +254,11 @@ public final class ConversationQueryService implements AutoCloseable {
                 Path directory = turn.getParent(), ownerDir = directory.getParent();
                 String relative = base.relativize(directory).toString().replace('\\', '/');
                 if (archived) relative = "team/" + relative;
-                String owner = relative.substring(0, relative.lastIndexOf('/'));
+                int ownerEnd = relative.lastIndexOf('/');
+                // Legacy provider histories can sit directly below the session root.
+                // They have no reliable Agent ownership and must not abort other queries.
+                if (ownerEnd < 0) continue;
+                String owner = relative.substring(0, ownerEnd);
                 String[] parts = owner.split("/");
                 // Never expose internal memory/ability/subagent runs as user conversations.
                 if (!(parts.length == 1 || parts.length == 2 && "starweave".equals(parts[0])
