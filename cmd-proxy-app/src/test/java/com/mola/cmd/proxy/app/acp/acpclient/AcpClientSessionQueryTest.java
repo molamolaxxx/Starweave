@@ -40,7 +40,12 @@ public class AcpClientSessionQueryTest {
             assertFalse(client.availableActionTools().contains("read_session_contexts"));
             JsonObject search = call(url, auth, "search_sessions", args("keyword", "检索"));
             String ref = search.getAsJsonArray("sessions").get(0).getAsJsonObject().get("session_ref").getAsString();
-            JsonObject read = call(url, auth, "read_session_history", args("session_ref", ref));
+            JsonArray refs = new JsonArray(); refs.add(ref); refs.add("missing");
+            JsonObject arguments = new JsonObject(); arguments.add("session_refs", refs);
+            JsonArray results = call(url, auth, "read_session_history", arguments).getAsJsonArray("sessions");
+            assertEquals(2, results.size());
+            assertEquals("SESSION_NOT_FOUND", results.get(1).getAsJsonObject().getAsJsonObject("error").get("code").getAsString());
+            JsonObject read = results.get(0).getAsJsonObject();
             assertEquals(2, read.getAsJsonArray("messages").size());
             assertEquals("可读取的回复", read.getAsJsonArray("messages").get(1).getAsJsonObject().get("content").getAsString());
             assertFalse(read.toString().contains(root.toString()));

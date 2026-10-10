@@ -226,23 +226,48 @@ public final class ConversationQueryService implements AutoCloseable {
     private static String filterName(JsonObject args) { return value(args, "agent").trim(); }
 
     public String readHistory(JsonObject arguments) {
-        validate(arguments, "session_ref");
-        String ref = value(arguments, "session_ref");
-        if (ref.isEmpty()) throw failure("INVALID_ARGUMENT", "session_ref 必填");
+        if (arguments.size() != 1 || !arguments.has("session_refs") || !arguments.get("session_refs").isJsonArray()
+                || arguments.getAsJsonArray("session_refs").size() < 1 || arguments.getAsJsonArray("session_refs").size() > 10)
+            throw failure("INVALID_ARGUMENT", "session_refs 必须为包含 1 到 10 个会话引用的数组");
+        JsonArray refs = arguments.getAsJsonArray("session_refs");
+        for (JsonElement ref : refs)
+            if (!ref.isJsonPrimitive() || !ref.getAsJsonPrimitive().isString() || ref.getAsString().trim().isEmpty())
+                throw failure("INVALID_ARGUMENT", "session_refs 每项必须为非空字符串");
+        Map<String, Session> found = new HashMap<>();
         try {
-            Session session = discover().stream().filter(s -> s.ref.equals(ref)).findFirst()
-                    .orElseThrow(() -> failure("SESSION_NOT_FOUND", "会话不存在或已删除"));
-            JsonObject result = new JsonObject();
-            result.addProperty("session_ref", ref); addIdentity(result, session);
-            JsonArray history = new JsonArray();
-            messages(session, false).forEach(history::add);
-            result.add("messages", history);
-            return result.toString();
-        } catch (QueryException e) { throw e; }
-        catch (Exception e) {
-            LOG.warn("Conversation history read failed", e);
+            for (Session session : discover()) found.put(session.ref, session);
+        } catch (Exception e) {
+            LOG.warn("Conversation history discovery failed", e);
             throw failure("HISTORY_UNAVAILABLE", "会话历史暂时不可用，请稍后重试");
         }
+        JsonArray sessions = new JsonArray();
+        Map<String, JsonObject> loaded = new HashMap<>();
+        for (JsonElement refValue : refs) {
+            String ref = refValue.getAsString();
+            JsonObject item = loaded.get(ref);
+            if (item == null) {
+                item = new JsonObject(); item.addProperty("session_ref", ref);
+                Session session = found.get(ref);
+                if (session != null) addIdentity(item, session);
+                try {
+                    if (session == null) throw failure("SESSION_NOT_FOUND", "会话不存在或已删除");
+                    JsonArray history = new JsonArray(); messages(session, false).forEach(history::add);
+                    item.add("messages", history);
+                } catch (Exception e) {
+                    QueryException error;
+                    if (e instanceof QueryException) error = (QueryException) e;
+                    else {
+                        LOG.warn("Conversation history read failed", e);
+                        error = failure("HISTORY_UNAVAILABLE", "会话历史暂时不可用，请稍后重试");
+                    }
+                    JsonObject details = new JsonObject(); details.addProperty("code", error.code);
+                    details.addProperty("message", error.getMessage()); item.add("error", details);
+                }
+                loaded.put(ref, item);
+            }
+            sessions.add(item);
+        }
+        JsonObject result = new JsonObject(); result.add("sessions", sessions); return result.toString();
     }
 
     String read(JsonObject arguments) {

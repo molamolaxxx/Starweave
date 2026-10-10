@@ -49,18 +49,19 @@ Harness 在普通及团队成员 ACP client 中提供两个只读工具：search
 
 ## read_session_history
 
-只需传一个 session_ref，一次读取会话的全部消息。
+只需传 session_refs 数组，一次读取一个或多个会话的全部消息。
 
 ```json
-{"session_ref":"opaque-reference"}
+{"session_refs":["opaque-reference","another-reference"]}
 ```
 
 | 入参 | 含义 |
 | --- | --- |
-| session_ref | 必填，search_sessions 返回的稳定会话引用。唯一入参。 |
+| session_refs | 必填，包含 1 到 10 个 search_sessions 返回的稳定会话引用。传一项为单次读取，多项为批量读取；每项必须为非空字符串。唯一入参。 |
 
 ```json
 {
+  "sessions": [{
   "session_ref": "opaque-reference",
   "agent": "Cmd Proxy Dev",
   "scope": "team",
@@ -75,6 +76,10 @@ Harness 在普通及团队成员 ACP client 中提供两个只读工具：search
       "output_truncated":true
     }
   ]
+  }, {
+    "session_ref": "another-reference",
+    "error": {"code":"SESSION_NOT_FOUND","message":"会话不存在或已删除"}
+  }]
 }
 ```
 
@@ -82,7 +87,9 @@ messages 按时间正序排列，返回全部消息，无分页、游标、锚�
 
 工具调用的更新合并为一条，保留最新非空名称、状态、输入及结果。**input 保留原始完整 JSON，不缩略、不拆分。** 只有 output 使用文本预览，最多 2,000 字符，超长保留首尾，内嵌图片和音频 Base64 省略；output_truncated 标记缩略，原始历史不受影响。工具无结果时 output 为空字符串。
 
-read_session_contexts 已移除；read_session_history 不再接受 message_id、cursor 或 items。会话不存在或读取失败时通过 MCP isError=true 返回 error.code、error.message。
+sessions 按输入顺序返回，重复引用也保留对应结果；一次发现会话，重复引用共用读取结果。单个会话不存在或读取失败时在对应项中返回 error.code、error.message，不影响其他会话。已识别会话的错误仍含归属字段。所有消息均一次返回，不设总返回体积预算。
+
+read_session_contexts 已移除；read_session_history 只接受 session_refs，不接受旧的 session_ref、message_id、cursor 或 items。请求结构非法或会话发现失败通过 MCP isError=true 返回整体错误。
 
 ## 身份、存储及错误
 

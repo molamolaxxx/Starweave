@@ -141,7 +141,7 @@ public class ConversationQueryUpgradeTest {
         rows[60].add("rawInput", input);
         rows[60].add("rawOutput", object("text", String.join("", Collections.nCopies(8000, "y"))));
         write("s", rows); String ref = ref(search("needle"));
-        JsonObject result = json(query.readHistory(object("session_ref", ref)));
+        JsonObject result = json(query.readHistory(readRefs(ref))).getAsJsonArray("sessions").get(0).getAsJsonObject();
         JsonArray messages = result.getAsJsonArray("messages");
         assertEquals(61, messages.size());
         assertEquals(longText, messages.get(0).getAsJsonObject().get("content").getAsString());
@@ -152,7 +152,38 @@ public class ConversationQueryUpgradeTest {
         assertFalse(result.has("before_cursor")); assertFalse(result.has("after_cursor"));
         error("INVALID_ARGUMENT", () -> query.readHistory(object("session_ref", ref, "message_id", "m1")));
         error("INVALID_ARGUMENT", () -> query.readHistory(new JsonObject()));
-        error("SESSION_NOT_FOUND", () -> query.readHistory(object("session_ref", "missing")));
+        assertEquals("SESSION_NOT_FOUND", json(query.readHistory(readRefs("missing"))).getAsJsonArray("sessions")
+                .get(0).getAsJsonObject().getAsJsonObject("error").get("code").getAsString());
+    }
+
+    @Test public void batchReadsPreserveOrderAndIsolateMissingAndCorruptHistory() throws Exception {
+        write("good", row("USER", "u1", "needle"));
+        write("bad", row("USER", "u2", "bad needle"));
+        String good = ref(search("needle")), bad = ref(search("bad"));
+        // Locate the healthy reference independently of timestamp ordering.
+        JsonArray hits = search("needle").getAsJsonArray("sessions");
+        for (JsonElement hit : hits) if (!hit.getAsJsonObject().get("session_ref").getAsString().equals(bad))
+            good = hit.getAsJsonObject().get("session_ref").getAsString();
+        Files.write(root.resolve("One/bad/turn_1.json"), "broken".getBytes(StandardCharsets.UTF_8));
+        JsonArray results = json(query.readHistory(readRefs("missing", good, bad, good))).getAsJsonArray("sessions");
+        assertEquals(4, results.size());
+        assertEquals("SESSION_NOT_FOUND", results.get(0).getAsJsonObject().getAsJsonObject("error").get("code").getAsString());
+        assertEquals(good, results.get(1).getAsJsonObject().get("session_ref").getAsString());
+        assertEquals(1, results.get(1).getAsJsonObject().getAsJsonArray("messages").size());
+        assertEquals("HISTORY_UNAVAILABLE", results.get(2).getAsJsonObject().getAsJsonObject("error").get("code").getAsString());
+        assertEquals(results.get(1), results.get(3));
+        error("INVALID_ARGUMENT", () -> query.readHistory(readRefs()));
+        error("INVALID_ARGUMENT", () -> query.readHistory(readRefs("")));
+        String[] tooMany = new String[11]; Arrays.fill(tooMany, good);
+        error("INVALID_ARGUMENT", () -> query.readHistory(readRefs(tooMany)));
+        error("INVALID_ARGUMENT", () -> query.readHistory(object("session_refs", "s")));
+        JsonObject invalid = readRefs(good); invalid.getAsJsonArray("session_refs").add(7);
+        error("INVALID_ARGUMENT", () -> query.readHistory(invalid));
+    }
+
+    private static JsonObject readRefs(String... values) {
+        JsonArray refs = new JsonArray(); for (String value : values) refs.add(value);
+        JsonObject args = new JsonObject(); args.add("session_refs", refs); return args;
     }
 
     @Test public void batchKeepsOversizedInputAndDefersRemainingItems() throws Exception {
