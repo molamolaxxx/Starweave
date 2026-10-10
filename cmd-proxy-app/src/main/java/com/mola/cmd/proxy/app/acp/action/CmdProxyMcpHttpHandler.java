@@ -242,7 +242,10 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
         JsonObject search = objectWithRequired(new String[]{});
         addProperty(search, "keyword", described(stringSchema(), "搜索标题和消息正文；省略或为空时列出最近会话。多个空白分隔关键词须全部匹配。"));
         addProperty(search, "agent", described(stringSchema(), "self 查询自身历次会话（默认），all 查询本实例普通及团队成员会话，也可填写准确 Agent 名称。"));
-        addProperty(search, "cursor", described(stringSchema(), "原样传入 next_cursor，翻页时保持 keyword 和 agent 不变。"));
+        JsonObject days = new JsonObject(); days.addProperty("type", "integer");
+        days.addProperty("minimum", 0); days.addProperty("maximum", Integer.MAX_VALUE); days.addProperty("default", 7);
+        addProperty(search, "days", described(days, "按会话最后更新时间搜索最近多少天；默认 7，0 表示全部历史。活动会话仍参与搜索，避免遗漏未落盘消息。"));
+        addProperty(search, "cursor", described(stringSchema(), "原样传入 next_cursor，翻页时保持 keyword、agent 和 days 不变。"));
         if (availableTools.contains("search_sessions")) tools.add(tool("search_sessions", "搜索本实例历史会话，返回 session_ref 和命中 message_id；每页最多 10 个会话，不暴露存储路径。", search));
         JsonObject read = objectSchema("session_ref", described(stringSchema(), "搜索返回的稳定会话引用。"));
         addProperty(read, "message_id", described(stringSchema(), "读取指定消息及前后上下文；省略时读取最近一页，与 cursor 互斥。"));

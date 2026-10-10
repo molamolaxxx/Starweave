@@ -9,6 +9,8 @@ import org.junit.rules.TemporaryFolder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
@@ -136,6 +138,97 @@ public class ConversationQueryServiceTest {
         assertTrue(search.toString().contains("UNIQUE_MIDDLE"));
     }
 
+    @Test public void parallelSearchesShareFourScannersAndKeepStableOrder() throws Exception {
+        CountDownLatch entered = new CountDownLatch(4), release = new CountDownLatch(1);
+        AtomicInteger active = new AtomicInteger(), maximum = new AtomicInteger();
+        for (int i = 0; i < 8; i++) {
+            final int index = i;
+            ConversationQueryService live = new ConversationQueryService(root, root.resolve("Agent" + i),
+                    "Agent" + i, () -> "live", () -> {
+                int count = active.incrementAndGet();
+                maximum.accumulateAndGet(count, Math::max);
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("scan gate timeout");
+                    JsonArray messages = new JsonArray();
+                    messages.add(args("role", "USER", "content", "needle " + index, "messageId", "m" + index));
+                    return messages;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt(); throw new IllegalStateException(e);
+                } finally { active.decrementAndGet(); }
+            });
+            services.add(live);
+        }
+        ExecutorService callers = Executors.newFixedThreadPool(2);
+        try {
+            Future<String> first = callers.submit(() -> services.get(0).search(args("agent", "all", "keyword", "needle")));
+            assertTrue("Four different sessions should scan concurrently", entered.await(5, TimeUnit.SECONDS));
+            Future<String> second = callers.submit(() -> services.get(1).search(args("agent", "all", "keyword", "needle")));
+            release.countDown();
+            JsonArray a = json(first.get(10, TimeUnit.SECONDS)).getAsJsonArray("sessions");
+            JsonArray b = json(second.get(10, TimeUnit.SECONDS)).getAsJsonArray("sessions");
+            assertEquals(8, a.size()); assertEquals(a, b);
+            assertEquals(4, maximum.get()); assertEquals(0, active.get());
+            for (int i = 1; i < a.size(); i++) assertTrue(a.get(i - 1).getAsJsonObject()
+                    .get("session_ref").getAsString().compareTo(a.get(i).getAsJsonObject()
+                            .get("session_ref").getAsString()) < 0);
+        } finally { release.countDown(); callers.shutdownNow(); }
+    }
+
+    @Test public void workerFailurePreservesBusinessErrorAndLaterQueriesWork() throws Exception {
+        ConversationHistoryManager manager = history("One");
+        AtomicInteger attempts = new AtomicInteger();
+        ConversationQueryService query = new ConversationQueryService(root, manager.getQueryNamespace(),
+                "One", () -> "live", () -> {
+            if (attempts.getAndIncrement() == 0)
+                throw ConversationQueryService.failure("HISTORY_UNAVAILABLE", "temporarily unavailable");
+            JsonArray messages = new JsonArray(); messages.add(args("role", "USER", "content", "recovered"));
+            return messages;
+        });
+        services.add(query);
+        error("HISTORY_UNAVAILABLE", () -> query.search(args()));
+        assertEquals(1, json(query.search(args("keyword", "recovered"))).getAsJsonArray("sessions").size());
+    }
+
+    @Test public void defaultsToSevenDaysAndCanSearchAllOrAnotherRange() throws Exception {
+        ConversationHistoryManager manager = history("One");
+        manager.addUserMessage("recent needle"); manager.flushTurn("recent");
+        manager.addUserMessage("older needle"); manager.flushTurn("older");
+        Path oldTurn;
+        try (java.util.stream.Stream<Path> files = Files.list(manager.getQueryNamespace().resolve("older"))) {
+            oldTurn = files.filter(p -> p.getFileName().toString().startsWith("turn_")).findFirst().get();
+        }
+        Files.setLastModifiedTime(oldTurn, java.nio.file.attribute.FileTime.fromMillis(
+                System.currentTimeMillis() - TimeUnit.DAYS.toMillis(8)));
+        ConversationQueryService query = service(manager, new AtomicReference<>());
+        assertEquals(1, json(query.search(args("keyword", "needle"))).getAsJsonArray("sessions").size());
+        JsonObject all = args("keyword", "needle"); all.addProperty("days", 0);
+        assertEquals(2, json(query.search(all)).getAsJsonArray("sessions").size());
+        all.addProperty("days", 9);
+        assertEquals(2, json(query.search(all)).getAsJsonArray("sessions").size());
+        // The filter precedes JSON parsing, so an excluded old record cannot break the search.
+        Files.write(oldTurn, "broken JSON".getBytes(StandardCharsets.UTF_8));
+        Files.setLastModifiedTime(oldTurn, java.nio.file.attribute.FileTime.fromMillis(
+                System.currentTimeMillis() - TimeUnit.DAYS.toMillis(8)));
+        assertEquals(1, json(query.search(args())).getAsJsonArray("sessions").size());
+        error("HISTORY_UNAVAILABLE", () -> query.search(all));
+        for (JsonElement invalid : Arrays.asList(new JsonPrimitive(-1), new JsonPrimitive(1.5),
+                new JsonPrimitive("7"), new JsonPrimitive(true), JsonNull.INSTANCE, new JsonPrimitive(2147483648L))) {
+            JsonObject bad = args(); bad.add("days", invalid);
+            error("INVALID_ARGUMENT", () -> query.search(bad));
+        }
+    }
+
+    @Test public void recentLiveMessageIsNotExcludedByOldPersistedTimestamp() throws Exception {
+        ConversationHistoryManager manager = history("One");
+        manager.addUserMessage("old turn"); manager.flushTurn("active");
+        Files.setLastModifiedTime(manager.getQueryNamespace().resolve("active/turn_0000.json"),
+                java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30)));
+        manager.addUserMessage("new unflushed needle");
+        ConversationQueryService query = service(manager, new AtomicReference<>("active"));
+        assertEquals(1, json(query.search(args("keyword", "needle"))).getAsJsonArray("sessions").size());
+    }
+
     @Test public void pagesBothDirectionsWithoutDuplicatesAndReadsAnchor() throws Exception {
         ConversationHistoryManager manager = history("One");
         for (int i = 0; i < 85; i++) manager.addAssistantMessage("message-" + i);
@@ -228,6 +321,8 @@ public class ConversationQueryServiceTest {
         assertEquals(3, second.getAsJsonArray("sessions").size());
         assertTrue(second.get("next_cursor").isJsonNull());
         error("CURSOR_EXPIRED", () -> query.search(args("keyword", "other", "cursor", cursor)));
+        JsonObject changedDays = args("keyword", "search", "cursor", cursor); changedDays.addProperty("days", 0);
+        error("CURSOR_EXPIRED", () -> query.search(changedDays));
         error("CURSOR_EXPIRED", () -> query.search(args("cursor", cursor + "x")));
         error("INVALID_ARGUMENT", () -> query.read(args("session_ref", ref(first), "message_id", "m", "cursor", cursor)));
         error("MESSAGE_NOT_FOUND", () -> query.read(args("session_ref", ref(first), "message_id", "missing")));
