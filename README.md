@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/images/session.png" alt="Starweave 会话工作台" width="100%" />
+<img src="docs/images/agents-dark.png" alt="Starweave 多引擎智能体控制台" width="100%" />
 
 # ✦ Starweave
 
@@ -42,15 +42,18 @@ Web 控制台里被观测和编排。
 
 | | 能力 | 一句话 |
 |---|---|---|
-| 🛰️ | **多引擎编队** | Kiro CLI / OpenCode / Claude Agent · ACP / Codex · ACP / DeepSeek Harness · ACP，同一控制台混编 |
+| 🛰️ | **多引擎编队** | 默认内嵌 Pi，也可混编 Kiro CLI / OpenCode / Claude / Codex / DeepSeek Harness |
 | 💬 | **TalkTo** | 智能体之间异步互发消息，发完就走、可双向回复，复用彼此的完整上下文 |
 | 👥 | **Fast Team** | 多个智能体临时组队，普通模式全员互通，队长模式星形指挥 |
 | 🧩 | **子智能体并行** | 一键把独立任务扇出给多位专家并行执行，再聚合回主智能体 |
 | 🧠 | **长期记忆 + Auto Dream** | 跨会话记住你的偏好与项目决策，并在后台自动整理、去重、纠错 |
+| 🔎 | **会话历史检索** | 智能体可搜索普通与团队会话，一次读取最多 10 个会话，找回以前的讨论 |
+| 🔭 | **观测台** | 定期运行脚本，状态变化才通知智能体，让它主动响应世界的变化 |
 | ⏰ | **定时任务** | 用自然语言让智能体「每天八点问好」，周期 / 一次性都支持 |
 | ✅ | **任务中心** | 任务变成可追踪、可分配、可回写的一等实体，还开放对外创建 API |
 | 📡 | **外部信道** | 企业微信双向接入，消息先归档再投递，可检索、可审计 |
 | 🌐 | **智能体网关** | 把真实会话以结构化事件流 + HTTP/WebSocket 暴露给外部系统 |
+| 🌍 | **注册中心** | 通过内嵌 TLS 反向隧道连接远程环境，在一个控制台管理多台机器 |
 | 🖥️ | **Starweave 控制台** | 暗夜主题、响应式、移动端可用的可视化配置与观测中心 |
 
 ---
@@ -80,6 +83,8 @@ flowchart TB
 
         MEM["🧠 记忆 + Auto Dream"]
         SCH["⏰ 定时任务"]
+        OBS["🔭 观测台"]
+        REG["🌍 注册中心 / 远程环境"]
         TASK["📋 任务中心"]
         UI["🖥️ Starweave 控制台"]
     end
@@ -94,6 +99,8 @@ flowchart TB
     A2 <-->|TalkTo| A3
     A1 --> MEM
     Core --> SCH
+    OBS -->|变化通知| Core
+    REG <--> Core
     API --> TASK
     UI -.配置 / 观测.-> Core
 
@@ -102,7 +109,7 @@ flowchart TB
     classDef side fill:#1f2440,stroke:#5a6bb0,color:#dfe3ff
     class WC,EXT,MC world
     class A1,A2,A3,T core
-    class GW,CH,API,MEM,SCH,TASK,UI side
+    class GW,CH,API,MEM,SCH,OBS,REG,TASK,UI side
 ```
 
 ---
@@ -113,7 +120,7 @@ flowchart TB
 它们既可以是“独立运行”的主角，也可以配置为“仅子智能体”或“仅团队成员”。
 
 <div align="center">
-<img src="docs/images/agents.png" alt="智能体管理" width="100%" />
+<img src="docs/images/agents-dark.png" alt="智能体管理" width="100%" />
 <sub>智能体列表：引擎、工作空间、记忆开关、子智能体与联系人一览无余</sub>
 </div>
 
@@ -121,11 +128,19 @@ flowchart TB
 
 | 引擎 | 说明 |
 |---|---|
+| **内嵌引擎 · Pi** | 新建智能体默认引擎；Pi 与依赖随 JAR 分发，填写兼容 API 地址、模型与独立密钥即可使用 |
 | **Kiro CLI** | 兼容 ACP 的本地 CLI 智能体 |
 | **OpenCode** | 按工作目录隔离，可搜索可手输的模型目录 |
 | **Claude Agent · ACP** | Claude Code 的 ACP 桥接 |
 | **Codex · ACP** | OpenAI Codex 的 ACP 桥接（按 Codex Home 跨工作目录共享模型目录） |
 | **DeepSeek Harness · ACP** | DeepSeek Harness，内置标准 / PTC / 极简 / 创造多套预设 |
+
+**从 Pi 开始，只需连接你的模型。** 默认 API 地址为 `https://api.deepseek.com`，也可填写其他
+OpenAI 兼容服务；模型需支持流式 Chat Completions 和工具调用。每个智能体独立保存模型配置与密钥，
+高级设置可调整上下文窗口和最大输出预算，应按实际模型能力填写。
+
+内嵌 Pi 当前支持 **Linux x64 / Windows x64**，运行时需要系统 **Node.js 22.19.0+**；
+无需单独安装 Pi 或 npm 依赖。它同样接入团队、记忆、调度、观测和外部信道。
 
 ---
 
@@ -156,8 +171,8 @@ TalkTo 是另一条通道——**异步、双向、非阻塞**：
 | 通信链存活时间 | **2 小时** |
 | 重复内容窗口 | 60 秒去重 |
 
-还支持跨环境通信——把目标写成 `{chatterId}:{robotName}`，消息就会经网关路由到另一台
-cmd-proxy 上的智能体，对模型完全透明。
+还支持跨环境通信与混合队伍。MolaChat 跨 chatter 路由可使用 `{chatterId}:{robotName}`；
+通过 Starweave 注册中心创建的混合队伍则由运行时提供成员地址与路由，无需手工拼接目标。
 
 ---
 
@@ -167,7 +182,7 @@ cmd-proxy 上的智能体，对模型完全透明。
 （独立进程、独立历史），让它们带着临时通讯录协同作战。会话与主会话完全隔离，互不污染。
 
 <div align="center">
-<img src="docs/images/team.png" alt="Starweave 团队" width="82%" />
+<img src="docs/images/teams-dark.png" alt="Starweave 团队" width="100%" />
 <sub>Fast Team：成员状态、队长模式与团队级操作集中展示</sub>
 </div>
 
@@ -227,13 +242,35 @@ Starweave 为每个智能体维护一套**可读、可编辑、可导出**的长
 
 ---
 
+## 🔎 会话历史：把以前的讨论找回来
+
+长期记忆保存提炼后的结论，**会话检索保留回到原始讨论的入口**。智能体可以先搜索，再读取历史，
+在新会话里继续以前的项目，而不必让你重新讲一遍。
+
+- `search_sessions`：按关键词、智能体、消息角色、时间范围搜索；支持普通会话与团队成员会话，并可按团队、成员筛选。
+- `read_session_history`：使用搜索返回的稳定 `session_ref`，一次读取 **1～10 个会话**的全部消息，按输入顺序返回；单个会话失败不影响其他结果。
+- 默认搜索自己最近 7 天的会话，也可查询当前实例全部开放会话；查询范围限于当前实例，远程环境需在对应实例查询。
+- 返回不透明引用，不暴露存储路径；历史读取保留完整正文与工具输入，工具输出提供有长度限制的预览。
+
+```json
+{"keyword":"注册中心", "agent":"all", "scope":"team"}
+```
+
+将搜索结果中的引用交给历史读取工具：
+
+```json
+{"session_refs":["搜索返回的会话引用", "另一个会话引用"]}
+```
+
+---
+
 ## ⏰ 定时任务：让智能体按时上班
 
 用自然语言说一句「每天上午八点问我好」，智能体就会通过内置 MCP 工具把任务落盘，
 由调度线程每分钟扫描，到点后在**自己的新会话**里执行。
 
 <div align="center">
-<img src="docs/images/schedules.png" alt="定时任务" width="100%" />
+<img src="docs/images/schedules-dark.png" alt="定时任务" width="100%" />
 <sub>定时任务看板：周期 / 一次性、上次执行与下次触发一目了然</sub>
 </div>
 
@@ -243,9 +280,34 @@ Starweave 为每个智能体维护一套**可读、可编辑、可导出**的长
 
 ---
 
+## 🔭 观测台：世界一变，智能体就知道
+
+定时任务适合「到点执行」，观测台适合「**有变化再行动**」。给智能体配置一段 JavaScript，
+让它定期检查接口、文件或业务状态；结果发生变化时，再唤起智能体按你的处理指令执行。
+
+![观测台：通道、执行者、巡检周期与运行状态](docs/images/observations-dark.png)
+
+- 在智能体的「能力与角色」开启观测能力，再到观测台创建通道，或让智能体通过 MCP 自行管理。
+- 脚本通过 `module.exports` 导出函数，支持异步执行，返回字符串；默认每 **30 秒**运行一次。
+- 首次成功建立基线，后续字符串变化才产生事件；执行失败保留上次成功基线。
+- 每个事件保存变化前后结果与**事件处理指令快照**，智能体忙碌时等待投递、睡眠时唤醒。
+- 控制台可测试草稿、查看事件与投递状态、重试失败通知；测试不会改动正式基线。
+
+例如监测工作目录中的状态文件：
+
+```js
+module.exports = () => require('fs').readFileSync('status.txt', 'utf8');
+```
+
+再为通道填写「核验变化，汇总当前状态与下一步建议」这样的处理指令，观测就能从告警走向行动。
+
+---
+
 ## ✅ 任务中心与对外任务 API
 
 把「任务」从对话里抽出来，变成一个**有状态、有版本、有历史的一等实体**：
+
+![任务中心：状态统计、筛选与执行记录](docs/images/tasks-dark.png)
 
 - 五态流转：`START → IN_PROGRESS → COMPLETED / CANCELLED / SUSPENDED`。
 - Markdown 正文与备注、附件、按修订号的快照历史，冲突时返回版本校验错误。
@@ -271,6 +333,8 @@ curl -X POST http://localhost:10528/api/external/v1/tasks \
 首批外部信道实现了**企业微信智能机器人**的 WebSocket 长连接：
 
 - 企微消息以 TalkTo 来信形式投递到绑定的智能体，回复自动回到原会话（单聊 / 群聊均支持）。
+- 可将不同单聊或群聊持久化映射到指定团队成员；统一选择器支持搜索并自动刷新收到过消息的会话。
+- 可配置主动推送目标，让智能体在用户明确要求通知时选择对应企微会话。
 - 敏感信息不下发：`secret`、`userid`、`chatid` 等被替换为不透明回复令牌。
 - 消息**先落库、再去重、再投递**，数据库写入失败即拒绝投递（fail-closed），绝不静默丢消息。
 - 控制台内置**消息记录检索**：按关键字、发送者、会话、类型、附件、状态与时间范围组合查询，
@@ -291,6 +355,21 @@ curl -X POST http://localhost:10528/api/external/v1/tasks \
 
 ---
 
+## 🌍 注册中心：一块屏幕，连接多台机器
+
+开发机、服务器、远程工作空间各自运行 Starweave，通过注册中心汇入同一个环境选择器。
+切换环境后，配置、聊天、团队、任务、调度和文件操作在**对应机器**执行，数据留在所属环境。
+
+1. 在中心的 **系统设置 → 注册中心服务器** 启用注册中心，默认隧道端口为 `10530`。
+2. 在接入端填写中心管理地址和环境名称，点击注册；接入端需能访问中心管理端口与隧道端口。
+3. 在中心切换到远程环境，或挑选本机与远程成员组建混合队伍。
+
+反向隧道直接运行在 JVM 中，使用 **Netty + TLS**，无需额外安装 frp，也无需在接入端开放入站端口。
+支持重启后自动恢复连接、远程环境访问密码，以及按成员实时传递混合队伍回复。
+中心转发管理流量，远程智能体仍在原机器运行；独立网关和 RPC 监听端口不会自动映射。
+
+---
+
 ## 🖥️ Starweave 控制台
 
 一个随服务启动的 Web 控制台（默认 `http://localhost:10528`），把整套运行时变得可视、可点、可调。
@@ -299,21 +378,39 @@ curl -X POST http://localhost:10528/api/external/v1/tasks \
 <table>
 <tr>
 <td width="62%" align="center">
-<img src="docs/images/session.png" alt="会话工作台" width="100%" />
-<sub>会话工作台：结构化工具卡片、附件与流式输出</sub>
+<img src="docs/images/session-dark.png" alt="会话工作台布局" width="100%" />
+<sub>会话工作台：会话侧栏、聊天区域与输入工具栏</sub>
 </td>
 <td width="38%" align="center">
-<img src="docs/images/mobile-session.png" alt="移动端会话" width="62%" />
+<img src="docs/images/mobile-session-light.png" alt="移动端会话" width="62%" />
 <sub>移动端同样顺手</sub>
 </td>
 </tr>
 </table>
 </div>
 
-- 功能分区：**系统设置 · 消息渠道 · 智能体 · 会话 · 团队 · 任务 · 定时任务 · 工具权限**。
-- **黑夜主题**：午夜蓝为底、灰蓝为内容、雾钢蓝为交互，品牌紫作点缀。
+- 功能分区：**系统设置 · 消息渠道 · 智能体 · 会话 · 团队 · 任务 · 定时任务 · 观测台 · 工具权限**。
+- **暗色 / 明亮主题**：暗色以午夜蓝为底，明亮主题采用浅色面板，品牌紫贯穿交互。
 - **响应式**：PC 单行紧凑列表，移动端自动切换卡片布局。
+- 普通与团队会话首次加载最近 50 条可见消息，向上滚动再加载历史；工具更新合并展示，加载时保留阅读位置。
+- 输入框可拖拽调整高度；移动端回车换行、按钮发送，桌面端 Enter 发送、Shift+Enter 换行。
+- 任务弹窗在移动端通过 Tab 切换编辑与评论，长内容独立滚动。
 - 热更新：改智能体、信道、配置后一键保存并应用，无需重启进程。
+
+<details>
+<summary><b>☀️ 看看明亮主题与移动端团队（点击展开）</b></summary>
+
+![明亮主题智能体列表](docs/images/agents-light.png)
+
+<div align="center">
+<img src="docs/images/mobile-teams-dark.png" alt="移动端团队暗色主题" width="32%" />
+<img src="docs/images/mobile-teams-light.png" alt="移动端团队明亮主题" width="32%" />
+</div>
+
+</details>
+
+完整界面导览见 **[截图画廊](docs/screenshots.md)**：智能体配置、团队会话、记忆、任务、调度、观测、渠道、网关与工具权限。
+截图由 Open Code Skill 于 2026-10-11 整理，直接使用仓库内图片，在 GitHub 打开文档即可查看。
 
 ---
 
@@ -328,6 +425,12 @@ Starweave 以一个常驻 MCP Server 的名义（名称 `acp-harness-runtime`）
 | `dispatch_subagent` | 并行派发一个或多个子智能体任务 |
 | `schedule_task` | 创建周期 / 一次性定时任务 |
 | `manage_schedule` | 查询、取消、修改定时任务 |
+| `new_session` | 新建 ACP 会话，首轮重新注入当前 Harness；进度需通过 prompt 携带 |
+| `search_sessions` | 搜索当前实例的普通及团队会话 |
+| `read_session_history` | 按 `session_refs` 批量读取 1～10 个会话历史 |
+| `manage_observation_channels` | 管理当前智能体的观测通道 |
+| `test_observation_script` | 测试观测脚本草稿或已有通道 |
+| `query_observation_events` | 查询观测事件与完整明细 |
 
 `tools/list` 只返回当前智能体**实际拥有**的工具，不做空壳暴露；所有请求都会关联当前
 活跃会话，避免越权与串扰。
@@ -398,7 +501,8 @@ java -jar cmd-proxy-app/target/cmd-proxy-app-1.0.0-jar-with-dependencies.jar acp
 
 #### 指定远端服务地址
 
-接入 MolaChat 网关时，可指定远端主机（支持 `--remote-host <host>` 与 `--remote-host=<host>` 两种写法）：
+接入 MolaChat 网关时，可指定远端主机（支持 `--remote-host <host>` 与 `--remote-host=<host>` 两种写法）。
+Starweave 的本地控制台、注册中心与混合队伍可独立使用；MolaChat 按需连接：
 
 ```bash
 # 方式一：环境变量
@@ -441,9 +545,9 @@ java -Dcmd.proxy.home=~/.starweave-dev \
 
 ### 4. 配置并使用
 
-1. 打开控制台 → **智能体 → 添加智能体**，选择引擎、填写工作空间与名称。
+1. 打开控制台 → **智能体 → 添加智能体**，填写名称、工作空间；默认 Pi 引擎需填写模型 ID、API 地址与独立 API Key，也可切换其他引擎。
 2. 在 **消息渠道** 里按需接入企业微信或开放任务接口。
-3. 到 **团队 / 任务 / 定时任务** 页面组建你的智能体协作网络。
+3. 到 **团队 / 任务 / 定时任务 / 观测台** 页面配置协作、执行与变化响应。
 4. 点击右上角 **保存并应用**，配置立即生效。
 
 ### 运行目录与端口
@@ -454,6 +558,7 @@ java -Dcmd.proxy.home=~/.starweave-dev \
 | RPC 端口 | 10020（占用时自动漂移） |
 | 控制台端口 | 10528 |
 | 网关端口 | 10529 |
+| 注册中心隧道端口 | 10530（按需启用） |
 
 > 运行数据与配置都在 `~/.cmd-proxy`，与代码仓库分离，**不会污染 Git 工作区**。
 
@@ -492,6 +597,11 @@ cmd-proxy/
 │       │   │   ├── gateway/    #   智能体网关
 │       │   │   └── configui/   #   Web 控制台服务
 │       │   └── mcp/            # MCP 代理模式
+│       ├── java/.../app/acp/   # Java 侧实现，与 Kotlin 协同
+│       │   ├── observation/   #   观测脚本、变化事件与通知
+│       │   ├── registry/      #   注册中心与内嵌 TLS 反向隧道
+│       │   └── acpclient/     #   引擎 Provider（含内嵌 Pi）
+│       ├── resources/embedded/pi/ # Pi 适配层与捆绑运行资源
 │       └── resources/configui/ # 控制台前端（HTML / CSS / JS）
 └── docs/                       # 设计文档与插图
 ```
@@ -511,6 +621,10 @@ cmd-proxy/
 - **记忆与调度**
   - [记忆系统](docs/acp-memory-system-design.md) · [Auto Dream](docs/acp-memory-dream-proposal.md)
   - [定时任务](docs/acp-schedule-task-design.md)
+  - [会话查询 MCP](docs/acp-session-query-mcp.md) · [观测台](docs/observation-console.md)
+- **引擎与远程环境**
+  - [内嵌 Pi 引擎](docs/embedded-pi-engine.md)
+  - [注册中心](docs/registry-center.md) · [混合队伍协调](docs/registry-mixed-team-refactor.md) · [实时事件链路](docs/registry-team-realtime.md)
 - **外部世界**
   - [信道 + TalkTo MVP](docs/channel-acp-talkto-mvp-design.md) · [企微消息归档](docs/wecom-channel-message-archive-design.md)
   - [智能体网关](docs/agent-gateway-design.md) · [网关 API](docs/agent-gateway-api.md)
