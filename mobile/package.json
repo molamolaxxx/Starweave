@@ -1,0 +1,25 @@
+{
+  "name": "starweave-android",
+  "version": "1.0.3",
+  "private": true,
+  "description": "Starweave Android client, using MolaChat's Apache Cordova stack",
+  "scripts": {
+    "prepare:android": "cordova prepare android",
+    "build:android": "cordova build android --debug",
+    "test": "node --test test/*.test.js",
+    "test:browser": "node test/page-controls-browser.js"
+  },
+  "devDependencies": {
+    "cordova": "12.0.0",
+    "cordova-android": "13.0.0",
+    "cordova-plugin-inappbrowser": "6.0.0"
+  },
+  "cordova": {
+    "platforms": [
+      "android"
+    ],
+    "plugins": {
+      "cordova-plugin-inappbrowser": {}
+    }
+  }
+}
