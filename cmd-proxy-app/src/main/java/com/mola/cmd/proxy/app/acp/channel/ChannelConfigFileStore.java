@@ -20,6 +20,20 @@ public final class ChannelConfigFileStore {
 
     private ChannelConfigFileStore() { }
 
+    public static void updateConfig(Path path, java.util.function.Consumer<JSONObject> update) throws IOException {
+        updateConfig(path, update, () -> { });
+    }
+
+    /** Publishes runtime ownership only after its configuration was successfully committed. */
+    public static void updateConfig(Path path, java.util.function.Consumer<JSONObject> update, Runnable committed) throws IOException {
+        synchronized (LOCK) {
+            JSONObject root = Files.exists(path) ? JSON.parseObject(new String(Files.readAllBytes(path), StandardCharsets.UTF_8)) : new JSONObject();
+            String before = root.toJSONString(); update.accept(root);
+            if (!before.equals(root.toJSONString())) writeAtomically(path, JSON.toJSONString(root, SerializerFeature.PrettyFormat, SerializerFeature.SortField));
+            committed.run();
+        }
+    }
+
     /** Adds stable archive identities to legacy channel configs without touching secrets. */
     public static boolean ensureArchiveIds() throws IOException {
         return ensureArchiveIds(CmdProxyHome.resolve("acpConfig.json"));
@@ -162,6 +176,7 @@ public final class ChannelConfigFileStore {
                     ? JSON.parseObject(new String(Files.readAllBytes(configPath),
                             StandardCharsets.UTF_8))
                     : new JSONObject();
+            com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.validateSave(submitted, previous);
             JSONArray channels = submitted.getJSONArray("channels");
             com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiConfigStore.merge(submitted, previous, secretMask);
             JSONArray oldChannels = previous.getJSONArray("channels");

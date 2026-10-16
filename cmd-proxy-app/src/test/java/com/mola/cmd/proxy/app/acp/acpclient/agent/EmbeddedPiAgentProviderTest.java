@@ -24,8 +24,23 @@ public class EmbeddedPiAgentProviderTest {
     @Test public void linuxAndWindowsRuntimeSelection() throws Exception {
         assertEquals("linux-x64", EmbeddedPiRuntimeManager.platform("Linux", "amd64"));
         assertEquals("win-x64", EmbeddedPiRuntimeManager.platform("Windows 11", "x86_64"));
-        try { EmbeddedPiRuntimeManager.platform("Darwin", "x64"); fail(); } catch (java.io.IOException expected) { }
         try { EmbeddedPiRuntimeManager.platform("Linux", "aarch64"); fail(); } catch (java.io.IOException expected) { }
+    }
+    @Test public void macRuntimeSelectionSupportsIntelAndAppleSilicon() throws Exception {
+        for (String os : new String[]{"Mac OS X", "macOS", "Darwin"}) {
+            for (String arch : new String[]{"amd64", "x86_64", "x64"}) {
+                assertEquals("darwin-x64", EmbeddedPiRuntimeManager.platform(os, arch));
+            }
+            for (String arch : new String[]{"aarch64", "arm64", "ARM64"}) {
+                assertEquals("darwin-arm64", EmbeddedPiRuntimeManager.platform(os, arch));
+            }
+            try { EmbeddedPiRuntimeManager.platform(os, "ppc"); fail(); }
+            catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("macOS")); }
+        }
+        try { EmbeddedPiRuntimeManager.platform("FreeBSD", "x64"); fail(); }
+        catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("不支持当前系统")); }
+        try { EmbeddedPiRuntimeManager.platform("Windows 11", "arm64"); fail(); }
+        catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("仅支持 x64")); }
     }
     @Test public void compactionAndUsageReachExistingProjection() {
         EmbeddedPiAgentProvider provider = new EmbeddedPiAgentProvider();

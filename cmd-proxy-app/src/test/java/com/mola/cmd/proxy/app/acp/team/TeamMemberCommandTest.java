@@ -536,6 +536,43 @@ public class TeamMemberCommandTest {
         } finally { fixture.manager.close(); }
     }
 
+    @Test
+    public void segmentedReplyKeepsOrderAndIdsAcrossCompletionPaginationAndReload() throws Exception {
+        Fixture fixture = fixture();
+        java.nio.file.Path root = temporaryFolder.newFolder("segmented-api").toPath();
+        AcpClientIdentity identity = fixture.current.get().getClientIdentity();
+        com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager h =
+                new com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager(identity, root);
+        fixture.current.get().isolatedHistory = h;
+        try {
+            h.addUserMessage("question");
+            String beforeId = h.appendUiAssistant("before").getMessageId();
+            JsonObject tool = new JsonObject(); tool.addProperty("toolCallId", "t1"); tool.addProperty("status", "running");
+            h.addEventMessage("TOOL_CALL", tool);
+            String afterId = h.appendUiAssistant("after").getMessageId();
+            // ACP records a raw completed tool before its UI event callback.
+            h.addToolMessage("t1", "Tool", "completed", new JsonObject(), new JsonObject());
+            tool.addProperty("status", "completed"); h.addEventMessage("TOOL_CALL", tool);
+            JsonObject request = JsonParser.parseString(basePayload()).getAsJsonObject(); request.addProperty("limit", 50);
+            JsonArray live = json(fixture.handler.handleGetSessionHistory("live-segments", one(request.toString()))).getAsJsonArray("messages");
+            assertEquals(4, live.size());
+            assertEquals("before", live.get(1).getAsJsonObject().get("content").getAsString());
+            assertEquals("tool:t1", live.get(2).getAsJsonObject().get("messageId").getAsString());
+            assertEquals("completed", live.get(2).getAsJsonObject().getAsJsonObject("payload").get("status").getAsString());
+            assertEquals("after", live.get(3).getAsJsonObject().get("content").getAsString());
+            h.addAssistantMessage("beforeafter"); h.flushTurn("session-member-1");
+            fixture.current.get().isolatedHistory = new com.mola.cmd.proxy.app.acp.acpclient.context.ConversationHistoryManager(identity, root);
+            request.addProperty("limit", 2);
+            JsonObject page = json(fixture.handler.handleGetSessionHistory("restored-segments", one(request.toString())));
+            JsonArray latest = page.getAsJsonArray("messages");
+            assertEquals("tool:t1", latest.get(0).getAsJsonObject().get("messageId").getAsString());
+            assertEquals(afterId, latest.get(1).getAsJsonObject().get("messageId").getAsString());
+            request.addProperty("before", page.get("olderCursor").getAsString());
+            JsonArray older = json(fixture.handler.handleGetSessionHistory("older-segments", one(request.toString()))).getAsJsonArray("messages");
+            assertEquals(beforeId, older.get(1).getAsJsonObject().get("messageId").getAsString());
+        } finally { fixture.manager.close(); }
+    }
+
     private static TestClient client(TeamDefinition team, TeamMemberDefinition member,
                                      String sessionId) {
         AcpRobotParam robot = robot();

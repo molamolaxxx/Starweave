@@ -499,18 +499,27 @@ public abstract class AbstractAcpClient implements Closeable {
     }
 
     private void startProcess(boolean useFallbackCommand) throws IOException {
+        if (!useFallbackCommand) {
+            com.mola.starweave.agent.transport.AcpTransport alternate = agentProvider.openTransport(robotParamRef, java.util.Collections.emptyMap());
+            if (alternate != null) {
+                process = new com.mola.starweave.agent.transport.TransportProcess(alternate);
+                writer = new BufferedWriter(new OutputStreamWriter(alternate.output(), StandardCharsets.UTF_8));
+                reader = new BufferedReader(new InputStreamReader(alternate.input(), StandardCharsets.UTF_8));
+                return;
+            }
+        }
         ProcessBuilder pb = new ProcessBuilder();
         pb.redirectErrorStream(false);
 
         String home = System.getProperty("user.home");
         String currentPath = pb.environment().getOrDefault("PATH", "");
         // Windows: 进程可能从精简环境启动（如服务/计划任务），PATH 不完整，从注册表读取完整 PATH
-        if (System.getProperty("os.name").toLowerCase().contains("win")) {
+        if (!agentProvider.isInProcess() && System.getProperty("os.name").toLowerCase().contains("win")) {
             String regPath = readWindowsRegistryPath();
             if (regPath != null && !regPath.isEmpty()) {
                 pb.environment().put("PATH", regPath);
             }
-        } else {
+        } else if (!agentProvider.isInProcess()) {
             // Linux / macOS: 通过 login shell 获取完整 PATH，前置追加常用工具路径
             pb.environment().put("PATH", PathResolver.enrichPath(home, currentPath));
         }
@@ -565,11 +574,12 @@ public abstract class AbstractAcpClient implements Closeable {
             throw e;
         }
 
-        logger.info("启动 ACP 进程: {}, PATH contains node: {}", cmd,
-                pb.environment().getOrDefault("PATH", "").contains("node"));
+        logger.info("启动 ACP 运行时: {}, inProcess={}", cmd, agentProvider.isInProcess());
         Process startedProcess;
         try {
-            startedProcess = pb.start();
+            Process embedded = useFallbackCommand ? null
+                    : agentProvider.openEmbeddedRuntime(robotParamRef, pb.environment());
+            startedProcess = embedded != null ? embedded : pb.start();
         } catch (IOException | RuntimeException e) {
             preparedRuntimeLease.close();
             throw e;
@@ -578,8 +588,11 @@ public abstract class AbstractAcpClient implements Closeable {
             runtimeLeases.put(startedProcess, preparedRuntimeLease);
         }
         process = startedProcess;
-        writer = new BufferedWriter(new OutputStreamWriter(startedProcess.getOutputStream(), StandardCharsets.UTF_8));
-        reader = new BufferedReader(new InputStreamReader(startedProcess.getInputStream(), StandardCharsets.UTF_8));
+        com.mola.starweave.agent.transport.AcpTransport localTransport = new com.mola.starweave.agent.transport.ProcessAcpTransport(startedProcess);
+        writer = new BufferedWriter(new OutputStreamWriter(localTransport.output(), StandardCharsets.UTF_8));
+        reader = new BufferedReader(new InputStreamReader(localTransport.input(), StandardCharsets.UTF_8));
+
+        if (agentProvider.isInProcess()) return;
 
         // stderr 日志转发（用 INFO 级别，方便排查子进程崩溃原因）
         Thread stderrThread = new Thread(() -> {

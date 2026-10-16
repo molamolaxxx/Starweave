@@ -125,7 +125,7 @@ private fun startAcp() {
     val rpcPort = PortAllocator.allocate("RPC", CmdProxyHome.rpcPort(), reserved)
     CmdProxyConf.serverPort = rpcPort
     reserved.add(rpcPort)
-    val configUiEnabled = config.getJSONObject("configUi")?.getBooleanValue("enabled") ?: true
+    val configUiEnabled = config.getJSONObject("configUi")?.getBoolean("enabled") ?: true
     if (configUiEnabled) {
         activeConfigUiPort = PortAllocator.allocate("ConfigUI", desiredConfigUiPort(config), reserved)
         // 端口漂移时回写配置文件，保证配置页展示与实际监听一致
@@ -158,14 +158,7 @@ private fun startAcp() {
     // 启动 ConfigUI 服务（无论是否有 robots 配置都启动，方便用户配置）
     startConfigUiServer(config)
 
-    // 没有 robot 时仅保留 ConfigUI。chatterIds 为空仍需启动本地 ACP 核心，
-    // 这样 Starweave 可以按需开启环境本地会话。
-    val robotsArray = config.getJSONArray("robots")
-    if (robotsArray == null || robotsArray.isEmpty()) {
-        log.info("robots 为空，等待用户通过 ConfigUI 页面完成配置后刷新服务")
-        return
-    }
-
+    // 环境级服务独立于 robot 配置；首次启动也要开放 Team、观测与任务 API。
     startAcpServices(config)
 }
 
@@ -238,11 +231,16 @@ private fun registerInstance(config: JSONObject) {
  * 根据配置启动 ACP 核心服务（AcpProxy）。
  */
 private fun startAcpServices(config: JSONObject) {
-    val robotsArray = config.getJSONArray("robots") ?: return
+    config.getJSONArray("robots")?.forEach { value ->
+        val robot = value as? JSONObject
+        if (robot?.getString("agentProvider") == "REMOTE_STARCORE_ACP") {
+            robot["enabled"] = com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.online(robot.getString("name"))
+        }
+    }
+    val robotsArray = config.getJSONArray("robots") ?: JSONArray()
     val allRobots = robotsArray.toJavaList(AcpRobotParam::class.java)
     NpmProviderRuntimeManager.getInstance().configureAutoLatest(allRobots)
     val chatterIdsArray = config.getJSONArray("chatterIds") ?: JSONArray()
-    if (robotsArray.isEmpty()) return
 
     val chatterIdsJsonStr = chatterIdsArray.toJSONString()
     val enabledRobots = allRobots.filter { it.isEnabled }
@@ -265,19 +263,10 @@ private fun startAcpServices(config: JSONObject) {
         ?.toJavaObject(AgentGatewayServerConfig::class.java) ?: AgentGatewayServerConfig()
 
     val runtimePlan = AcpRuntimePlan.build(chatterIds, allRobots, channels)
-    if (!runtimePlan.shouldStartCoreRuntime()) {
-        log.info("没有可运行的 MolaChat、Starweave 或信道目标，跳过 ACP 核心启动")
-        return
-    }
     log.info("ACP 运行计划: molaChatTargets={}, starweaveEligibleRobots={}, enabledChannels={}",
         runtimePlan.molaChatTargetCount,
         runtimePlan.starweaveEligibleRobots,
         runtimePlan.enabledChannelCount)
-
-    if (enabledRobots.isEmpty()) {
-        log.info("所有 robot 均已禁用，跳过 ACP 服务启动")
-        return
-    }
 
     // 笛卡尔积生成 groupId 列表: chatterId 和 acpId 字典序排序后拼接
     val groupIdList = chatterIds.flatMap { chatterId ->
@@ -328,7 +317,7 @@ private fun startAcpServices(config: JSONObject) {
 
 private fun startConfigUiServer(config: JSONObject) {
     val configUi = config.getJSONObject("configUi")
-    val enabled = configUi?.getBooleanValue("enabled") ?: true
+    val enabled = configUi?.getBoolean("enabled") ?: true
     if (!enabled) {
         log.info("ConfigUI 已禁用，跳过启动")
         return
@@ -417,15 +406,19 @@ private fun reloadRobot(previousRobotName: String, robotName: String) {
             log.warn("配置中无 robots，跳过 robot 级重载")
             throw IllegalArgumentException("配置中无 robots 字段")
         }
-        val chatterIdsArray = config.getJSONArray("chatterIds") ?: run {
-            log.warn("配置中无 chatterIds，跳过 robot 级重载")
-            throw IllegalArgumentException("配置中无 chatterIds 字段")
-        }
+        val chatterIdsArray = config.getJSONArray("chatterIds") ?: com.alibaba.fastjson.JSONArray()
 
         val allRobots = robotsArray.toJavaList(AcpRobotParam::class.java)
         NpmProviderRuntimeManager.getInstance().configureAutoLatest(allRobots)
         val robot = allRobots.firstOrNull { it.name == robotName }
-            ?: throw IllegalArgumentException("robot '$robotName' 在配置中不存在")
+            ?: if (com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.wasRegistered(robotName)) {
+                // A disconnected record may be deleted before its queued cleanup runs.
+                AcpRobotParam().apply {
+                    name = robotName
+                    agentProvider = "REMOTE_STARCORE_ACP"
+                    isEnabled = false
+                }
+            } else throw IllegalArgumentException("robot '$robotName' 在配置中不存在")
 
         val chatterIds = chatterIdsArray.toJavaList(String::class.java)
 

@@ -66,9 +66,8 @@ public final class AcpRuntimePlan {
         return enabledChannelCount;
     }
 
-    /** Core runtime is needed when a local session may be opened on demand. */
+    /** Environment APIs and Team participation must work even before the first robot is configured. */
     public boolean shouldStartCoreRuntime() {
-        return molaChatTargetCount > 0 || !starweaveEligibleRobots.isEmpty()
-                || enabledChannelCount > 0;
+        return true;
     }
 }

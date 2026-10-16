@@ -45,7 +45,16 @@ public class AcpRuntimePlanTest {
                 Collections.emptyList());
 
         assertTrue(plan.getStarweaveEligibleRobots().isEmpty());
-        assertFalse(plan.shouldStartCoreRuntime());
+        assertTrue(plan.shouldStartCoreRuntime());
+    }
+
+    @Test
+    public void firstRunStartsEnvironmentServicesWithoutRobotTargets() {
+        AcpRuntimePlan plan = AcpRuntimePlan.build(null, null, null);
+        assertEquals(0, plan.getMolaChatTargetCount());
+        assertEquals(0, plan.getEnabledChannelCount());
+        assertTrue(plan.getStarweaveEligibleRobots().isEmpty());
+        assertTrue(plan.shouldStartCoreRuntime());
     }
 
     private static AcpRobotParam robot(String name, boolean enabled,

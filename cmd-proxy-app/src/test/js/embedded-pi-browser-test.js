@@ -20,7 +20,7 @@ const server = http.createServer((request, response) => {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const browser = await chromium.launch({ executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox'] });
     try {
-        for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+        for (const provider of ['EMBEDDED_PI_ACP', 'JAVA_PI_ACP']) for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
             const page = await browser.newPage({ viewport }); const errors = [];
             page.on('pageerror', error => errors.push(error.message));
             await page.goto(`http://127.0.0.1:${server.address().port}`, { waitUntil: 'domcontentloaded' });
@@ -42,6 +42,7 @@ const server = http.createServer((request, response) => {
             await page.locator('[data-robot-tab="agent"]').click();
             assert.equal(await page.locator('#dProvider').inputValue(), 'EMBEDDED_PI_ACP');
             assert.equal(await page.locator('#dProvider option:checked').textContent(), '内嵌引擎 · Pi');
+            await page.locator('#dProvider').selectOption(provider);
             assert.equal(await page.locator('#embeddedPiGroup details').evaluate(el => el.open), false);
             assert.equal(await page.locator('#dPiBaseUrl').inputValue(), 'https://api.deepseek.com');
             await page.locator('#dPiBaseUrl').fill('https://example.test/v1');
@@ -56,12 +57,13 @@ const server = http.createServer((request, response) => {
             await page.locator('#robotDialogSubmit').click();
             await page.waitForFunction(() => savedRequests.length === 1);
             const saved = await page.evaluate(() => ({ request: savedRequests[0].robots[0], current: config.robots[0] }));
+            assert.equal(saved.request.agentProvider, provider);
             assert.equal(saved.request.embeddedPi.contextWindow, 64000); assert.equal(saved.request.embeddedPi.maxTokens, 4096);
             assert.equal(saved.current.embeddedPi.apiKey, '********'); assert.equal(saved.current.embeddedPi.stateId, 'saved-0');
             await page.evaluate(() => openRobotDialog(0));
             await page.locator('[data-robot-tab="agent"]').click();
             await page.locator('#dProvider').selectOption('KIRO_CLI'); assert.equal(await page.locator('#embeddedPiGroup').isVisible(), false);
-            await page.locator('#dProvider').selectOption('EMBEDDED_PI_ACP'); assert.equal(await page.locator('#dPiBaseUrl').inputValue(), 'https://example.test/v1');
+            await page.locator('#dProvider').selectOption(provider); assert.equal(await page.locator('#dPiBaseUrl').inputValue(), 'https://example.test/v1');
             await page.locator('#embeddedPiGroup summary').click();
             await page.locator('#dPiContext').fill('1024');
             await page.locator('#robotDialogSubmit').click();
@@ -72,7 +74,7 @@ const server = http.createServer((request, response) => {
             await page.evaluate(() => { document.getElementById('dModel').value = 'very-long-model-'.repeat(100); });
             assert.ok(await page.locator('#dlgBody').evaluate(el => el.scrollWidth <= el.clientWidth + 2));
             assert.deepEqual(errors, []); await page.close();
-            console.log(`Pi configuration browser passed: ${viewport.width}x${viewport.height}`);
+            console.log(`Pi configuration browser passed: ${provider} ${viewport.width}x${viewport.height}`);
         }
     } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -5,7 +5,7 @@ await loadInstances(false);
 await loadConfig();
 var savedPage='basic';try{savedPage=sessionStorage.getItem('configui-page')||'basic'}catch(e){}
 switchPage(savedPage);
-setInterval(function(){if(!environmentGate.switching)refreshChannelStatuses()},5000);
+setInterval(function(){if(!environmentGate.switching){refreshChannelStatuses();refreshRemoteAcpStatuses()}},5000);
 setInterval(function(){if(environmentGate.switching)return;loadInstances(false);if(activePage==='basic'&&!registryBusy)loadRegistrySettings(false)},5000);
 setInterval(function(){if(!environmentGate.switching){loadItemRefreshStatus(true);syncEnvironmentGate()}},1000);
 setInterval(function(){if(!environmentGate.switching&&activePage==='sessions')loadStarweaveSessions(false)},5000);

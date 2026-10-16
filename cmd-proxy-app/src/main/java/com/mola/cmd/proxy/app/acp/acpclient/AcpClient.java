@@ -1415,8 +1415,11 @@ public class AcpClient extends AbstractAcpClient {
         // 文件路径每次都带
         if (filePaths != null && !filePaths.isEmpty()) {
             StringBuilder fb = new StringBuilder("[Attached Files]\n");
+            Map<String, String> staged = process instanceof com.mola.starweave.agent.transport.TransportProcess
+                    ? ((com.mola.starweave.agent.transport.TransportProcess) process).transport().stageFiles(filePaths)
+                    : null;
             for (String path : filePaths) {
-                fb.append("- ").append(path).append("\n");
+                fb.append("- ").append(staged == null ? path : staged.get(path)).append("\n");
             }
             fullTextBuilder.append(fb).append("\n");
         }

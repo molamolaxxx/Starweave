@@ -11,7 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
 
-public final class EmbeddedPiAgentProvider implements AgentProvider {
+public class EmbeddedPiAgentProvider implements AgentProvider {
     private static final EmbeddedPiRuntimeManager RUNTIME = new EmbeddedPiRuntimeManager();
     private final EmbeddedPiRuntimeManager runtimeManager;
     public EmbeddedPiAgentProvider() { this.runtimeManager = RUNTIME; }

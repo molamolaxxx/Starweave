@@ -1,0 +1,12 @@
+Starweave Java Agent
+
+This module ports the behavior of Starweave's embedded Pi integration and the
+minimal agent loop, session, skills and compaction concepts from Pi 0.75.3.
+Upstream: https://github.com/earendil-works/pi-mono
+Pinned source commit: a7d8dd3d5db7d66aa5cc6886e32768b1196ce91f
+
+Pi copyright (c) 2025 Mario Zechner, licensed under MIT.
+The accompanying PI-LICENSE.txt preserves the upstream license.
+
+The Java implementation uses JDK 8 APIs and Gson. It does not embed Node.js,
+the upstream terminal UI, web UI, extension runtime or model provider SDKs.

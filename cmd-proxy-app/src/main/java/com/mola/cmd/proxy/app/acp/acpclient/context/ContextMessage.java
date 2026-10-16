@@ -30,6 +30,13 @@ public class ContextMessage {
 
     private String messageId;
     private long revision;
+    // The complete model reply is retained when the UI has separate text segments.
+    private boolean uiHidden;
+    public boolean isUiHidden() { return uiHidden; }
+    public ContextMessage withUiHidden(boolean hidden) {
+        uiHidden = hidden;
+        return this;
+    }
     public String getMessageId() { return messageId; }
     public long getRevision() { return revision; }
     public ContextMessage withIdentity(String id, long version) {

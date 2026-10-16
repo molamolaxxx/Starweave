@@ -1,0 +1,4 @@
+interface:
+  display_name: "Starweave 移动端迭代"
+  short_description: "快速迭代 Starweave Cordova 安卓客户端，覆盖界面、构建和 APK 验证"
+  default_prompt: "使用 $cmd-proxy-mobile 修改 Starweave 移动端，并验证和交付可覆盖安装的 APK。"

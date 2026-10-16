@@ -139,7 +139,7 @@ flowchart TB
 OpenAI 兼容服务；模型需支持流式 Chat Completions 和工具调用。每个智能体独立保存模型配置与密钥，
 高级设置可调整上下文窗口和最大输出预算，应按实际模型能力填写。
 
-内嵌 Pi 当前支持 **Linux x64 / Windows x64**，运行时需要系统 **Node.js 22.19.0+**；
+内嵌 Pi 当前支持 **Linux x64 / Windows x64 / macOS x64 与 ARM64（Apple Silicon）**，运行时需要系统 **Node.js 22.19.0+**；
 无需单独安装 Pi 或 npm 依赖。它同样接入团队、记忆、调度、观测和外部信道。
 
 ---
@@ -414,6 +414,17 @@ curl -X POST http://localhost:10528/api/external/v1/tasks \
 
 ---
 
+## 📱 Android 客户端
+
+Starweave 也可以装进手机。Android 客户端沿用 MolaChat 的 **Apache Cordova + WebView** 技术栈，
+输入手机可访问的 Starweave 网页地址，即可使用现有移动端界面；成功连接后自动记住服务地址。
+在「系统设置 → 管理页面」中更换服务地址，即可切换到另一套 Starweave；页面没有额外浏览器工具栏。
+
+支持 Android 7.0 及以上，智能体继续在服务端运行。APK 构建、安装和连接说明见
+**[Android 客户端说明](mobile/README.md)**。
+
+---
+
 ## 🧰 内置 MCP 工具：`acp-harness-runtime`
 
 Starweave 以一个常驻 MCP Server 的名义（名称 `acp-harness-runtime`）向智能体提供能力，
@@ -534,6 +545,9 @@ java -Dcmd.proxy.home=~/.starweave-dev \
 > 不要携带协议、路径或端口。
 
 首次启动会生成配置文件并打印控制台地址：
+
+即使尚未添加智能体，团队、任务和观测台服务也会正常初始化，列表为空时可以继续配置；
+也可以先在系统设置中启用注册中心或接入已有中心。模型进程按实际会话需求启动。
 
 ```
 ========================================

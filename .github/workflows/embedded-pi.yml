@@ -1,21 +1,25 @@
-name: Embedded Pi Linux and Windows
+name: Embedded Pi Linux Windows and macOS
 on:
   push:
     paths:
       - 'cmd-proxy-app/src/main/resources/embedded/pi/**'
       - 'scripts/*embedded-pi.mjs'
+      - 'cmd-proxy-app/src/main/java/com/mola/cmd/proxy/app/acp/acpclient/agent/EmbeddedPi*.java'
+      - 'cmd-proxy-app/src/test/java/com/mola/cmd/proxy/app/acp/acpclient/agent/EmbeddedPi*.java'
       - '.github/workflows/embedded-pi.yml'
   pull_request:
     paths:
       - 'cmd-proxy-app/src/main/resources/embedded/pi/**'
       - 'scripts/*embedded-pi.mjs'
+      - 'cmd-proxy-app/src/main/java/com/mola/cmd/proxy/app/acp/acpclient/agent/EmbeddedPi*.java'
+      - 'cmd-proxy-app/src/test/java/com/mola/cmd/proxy/app/acp/acpclient/agent/EmbeddedPi*.java'
       - '.github/workflows/embedded-pi.yml'
 jobs:
   system-node-runtime:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-15-intel, macos-15]
         node: ['22.19.0', '24']
     runs-on: ${{ matrix.os }}
     steps:

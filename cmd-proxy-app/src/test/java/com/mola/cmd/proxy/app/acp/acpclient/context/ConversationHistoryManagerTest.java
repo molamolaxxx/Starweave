@@ -25,6 +25,85 @@ import static org.junit.Assert.*;
 public class ConversationHistoryManagerTest {
 
     @Test
+    public void interruptedSegmentsPreservePartialModelReplyAndDoNotLeakIntoNextTurn() throws Exception {
+        Path root = temporaryFolder.newFolder("interrupted-segments").toPath();
+        AcpClientIdentity identity = teamIdentity("team/team-1/member-interrupted");
+        ConversationHistoryManager manager = new ConversationHistoryManager(identity, root);
+        manager.addUserMessage("first");
+        manager.appendUiAssistant("before");
+        manager.addEventMessage("TOOL_CALL", new JsonObject());
+        manager.appendUiAssistant("partial");
+        manager.finishUiAssistant();
+        manager.finishUiAssistant();
+        manager.flushTurn("s");
+        manager.addUserMessage("next");
+        manager.appendUiAssistant("next reply");
+        manager.addAssistantMessage("next reply");
+        manager.flushTurn("s");
+        ConversationHistoryManager restored = new ConversationHistoryManager(identity, root);
+        List<String> model = restored.getFullHistory("s").stream()
+                .filter(message -> message.getRole() == ContextMessage.Role.ASSISTANT)
+                .map(ContextMessage::getContent).collect(java.util.stream.Collectors.toList());
+        assertEquals(Arrays.asList("beforepartial", "next reply"), model);
+        List<String> ui = restored.getUiHistory("s").stream()
+                .filter(message -> message.getRole() == ContextMessage.Role.ASSISTANT)
+                .map(ContextMessage::getContent).collect(java.util.stream.Collectors.toList());
+        assertEquals(Arrays.asList("before", "partial", "next reply"), ui);
+    }
+
+    @Test
+    public void forcedFlushPersistsTheLastStreamingSegment() throws Exception {
+        Path root = temporaryFolder.newFolder("forced-segments").toPath();
+        AcpClientIdentity identity = teamIdentity("team/team-1/member-forced");
+        ConversationHistoryManager manager = new ConversationHistoryManager(identity, root);
+        manager.appendUiAssistant("interrupted before completion");
+        manager.forceFlush("s");
+        ConversationHistoryManager restored = new ConversationHistoryManager(identity, root);
+        assertEquals(1, restored.getUiHistory("s").size());
+        assertEquals("interrupted before completion", restored.getUiHistory("s").get(0).getContent());
+        assertEquals(1, restored.getFullHistory("s").stream()
+                .filter(message -> message.getRole() == ContextMessage.Role.ASSISTANT).count());
+    }
+
+    @Test
+    public void uiSegmentsKeepToolBoundariesAndModelReplySurvivesReloadWithoutUiDuplication() throws Exception {
+        Path root = temporaryFolder.newFolder("segmented-history").toPath();
+        AcpClientIdentity identity = teamIdentity("team/team-1/member-segments");
+        ConversationHistoryManager manager = new ConversationHistoryManager(identity, root);
+        manager.addUserMessage("question");
+        ContextMessage before = manager.appendUiAssistant("before");
+        JsonObject tool = new JsonObject();
+        tool.addProperty("toolCallId", "tool-1");
+        manager.addEventMessage("TOOL_CALL", tool);
+        ContextMessage after = manager.appendUiAssistant("after");
+        assertNotEquals(before.getMessageId(), after.getMessageId());
+        List<ContextMessage> live = manager.getUiHistory("s");
+        assertEquals("before", live.get(1).getContent());
+        assertEquals("TOOL_CALL", live.get(2).getEventType());
+        assertEquals("after", live.get(3).getContent());
+        manager.addAssistantMessage("beforeafter");
+        manager.flushTurn("s");
+        ConversationHistoryManager restored = new ConversationHistoryManager(identity, root);
+        List<ContextMessage> ui = restored.getUiHistory("s");
+        assertEquals(4, ui.size());
+        assertEquals(before.getMessageId(), ui.get(1).getMessageId());
+        assertEquals("before", ui.get(1).getContent());
+        assertEquals("TOOL_CALL", ui.get(2).getEventType());
+        assertEquals(after.getMessageId(), ui.get(3).getMessageId());
+        assertEquals("after", ui.get(3).getContent());
+        List<ContextMessage> model = restored.getFullHistory("s").stream()
+                .filter(message -> message.getRole() == ContextMessage.Role.ASSISTANT)
+                .collect(java.util.stream.Collectors.toList());
+        assertEquals(1, model.size());
+        assertEquals("beforeafter", model.get(0).getContent());
+        // A subsequent non-streamed reply remains visible, including old-format history.
+        manager.addUserMessage("next");
+        manager.addAssistantMessage("legacy reply");
+        manager.flushTurn("s");
+        assertEquals("legacy reply", restored.getUiHistory("s").get(5).getContent());
+    }
+
+    @Test
     public void starweaveHistoryUsesValidatedLayeredNamespace() throws Exception {
         Path root = temporaryFolder.newFolder("starweave-root").toPath();
         AcpClientIdentity identity = StarweaveIdentity.identity(

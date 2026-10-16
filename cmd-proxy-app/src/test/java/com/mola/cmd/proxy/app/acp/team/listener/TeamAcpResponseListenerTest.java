@@ -27,6 +27,44 @@ public class TeamAcpResponseListenerTest {
     public TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
+    public void interleavedToolUpdatesSplitTextAndPreserveLiveAndPersistedSegmentIds() throws Exception {
+        TeamMemberDefinition member = member("member-segments", 0);
+        TeamRuntime runtime = new TeamRuntime(TeamDefinition.creating(
+                "team-segments", "owner-1", "Team", "team-acp-instance", "request-segments",
+                java.util.Collections.singletonList(member), 100L));
+        ConversationHistoryManager history = new ConversationHistoryManager(
+                AcpClientIdentity.team("team-acp-member-segments", "team-acp-instance",
+                        "team/team-segments/member-segments", "owner-1", "team-segments", "member-segments", "Source"),
+                temporary.newFolder("segments").toPath());
+        List<TeamEventEnvelope> events = new ArrayList<>();
+        TeamAcpResponseListener listener = new TeamAcpResponseListener(
+                runtime, member, events::add, TeamMemberStateObserver.NOOP, history);
+        listener.onMessage("before");
+        listener.onToolCall("t1", "Tool 1", "running", new JsonObject());
+        listener.onToolCall("t2", "Tool 2", "running", new JsonObject());
+        listener.onMessage("between");
+        listener.onToolCall("t1", "Tool 1", "completed", new JsonObject());
+        listener.onToolCall("t2", "Tool 2", "completed", new JsonObject());
+        listener.onMessage("after");
+        List<Map<?, ?>> updates = events.stream()
+                .filter(event -> event.getType() == TeamEventType.MESSAGE_UPDATED)
+                .map(event -> (Map<?, ?>) event.getData()).collect(java.util.stream.Collectors.toList());
+        assertEquals(3, updates.stream().map(data -> data.get("messageId")).distinct().count());
+        assertEquals(Arrays.asList("before", "between", "after"), updates.stream()
+                .map(data -> data.get("content")).collect(java.util.stream.Collectors.toList()));
+        history.addAssistantMessage("beforebetweenafter");
+        history.flushTurn("s");
+        List<ContextMessage> segments = history.getUiHistory("s").stream()
+                .filter(message -> message.getRole() == ContextMessage.Role.ASSISTANT)
+                .collect(java.util.stream.Collectors.toList());
+        assertEquals(3, segments.size());
+        for (int i = 0; i < segments.size(); i++) {
+            assertEquals(updates.get(i).get("messageId"), segments.get(i).getMessageId());
+            assertEquals(updates.get(i).get("content"), segments.get(i).getContent());
+        }
+    }
+
+    @Test
     public void boundsStructuredAndRenderedToolEventsButPersistsOriginal() throws Exception {
         TeamMemberDefinition member = member("member-large", 0);
         TeamRuntime runtime = new TeamRuntime(TeamDefinition.creating(

@@ -1,0 +1,22 @@
+name: Java Agent
+on:
+  push:
+    paths: ['starweave-agent/**', 'starweave-agent-sdk/**', '.github/workflows/java-agent.yml']
+  pull_request:
+    paths: ['starweave-agent/**', 'starweave-agent-sdk/**', '.github/workflows/java-agent.yml']
+  workflow_dispatch:
+jobs:
+  java8:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+      - run: mvn -B -f starweave-agent/pom.xml install
+      - run: mvn -B -f starweave-agent-sdk/pom.xml verify

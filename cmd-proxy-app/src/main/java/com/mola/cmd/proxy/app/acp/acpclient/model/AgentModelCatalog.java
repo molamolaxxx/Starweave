@@ -270,7 +270,7 @@ public final class AgentModelCatalog {
     private static String catalogKey(AcpRobotParam robot) {
         return join(robot.getAgentProvider(), robot.getProviderVersion(),
                 "DEEPSEEK_HARNESS_ACP".equalsIgnoreCase(robot.getAgentProvider())
-                        ? robot.getDeepSeekBaseUrl() : "EMBEDDED_PI_ACP".equalsIgnoreCase(robot.getAgentProvider()) && robot.getEmbeddedPi() != null
+                        ? robot.getDeepSeekBaseUrl() : com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderType.isPi(robot.getAgentProvider()) && robot.getEmbeddedPi() != null
                         ? robot.getEmbeddedPi().getBaseUrl() : null,
                 robot.getCodexHome(), robot.getDshHome())
                 + "|" + catalogScope(robot.getAgentProvider(), robot.getWorkDir());
@@ -285,7 +285,7 @@ public final class AgentModelCatalog {
     }
 
     private static String endpoint(JSONObject request) {
-        if ("EMBEDDED_PI_ACP".equalsIgnoreCase(request.getString("provider"))) {
+        if (com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderType.isPi(request.getString("provider"))) {
             JSONObject pi = request.getJSONObject("embeddedPi"); return pi == null ? null : pi.getString("baseUrl");
         }
         return "DEEPSEEK_HARNESS_ACP".equalsIgnoreCase(request.getString("provider"))

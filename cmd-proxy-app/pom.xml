@@ -18,6 +18,11 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>com.mola</groupId>
+            <artifactId>starweave-agent-sdk</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <!-- Embedded reverse tunnel; Java 8 compatible, no external executable. -->
         <dependency>
             <groupId>io.netty</groupId>

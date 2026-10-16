@@ -7,7 +7,7 @@ const core = fs.readFileSync(path.resolve(__dirname, '../../main/resources/confi
 function section(start, end) { return core.slice(core.indexOf(start), core.indexOf(end, core.indexOf(start))); }
 function deferred() { let resolve, reject; const promise = new Promise((a,b) => {resolve=a;reject=b;}); return {promise,resolve,reject}; }
 function harness(extra = {}) {
-    const nodes = new Map(), messages = [], loaded = [], locked = {inert:false};
+    const nodes = new Map(), messages = [], loaded = [], locked = {inert:false}, storage = new Map();
     const get = id => {if (!nodes.has(id)) nodes.set(id, {hidden:false, disabled:false, textContent:'', attributes:{}, setAttribute(k,v){this.attributes[k]=v;}, querySelector(){return get('icon');}, focus(){}});return nodes.get(id);};
     const context = vm.createContext({
         document:{body:{classList:{toggle(){},remove(){}}},getElementById:get,querySelectorAll:selector=>selector.includes('.app-layout')?[locked]:[]},
@@ -15,18 +15,21 @@ function harness(extra = {}) {
         curInstance:{instanceId:'a',displayName:'A'},instances:[{instanceId:'a',displayName:'A'},{instanceId:'b',displayName:'B'},{instanceId:'c',displayName:'C'}],
         config:{robots:[{name:'old'}]},dirty:false,activePage:'acp',location:{hash:'instance=a'},
         channelRuntime:{},teamSharingRuntime:{},channelBindingTargets:{},mcpAuthRuntime:{},starSessions:{},starTeams:{},teamSession:{},taskState:{},taskEditor:{},
-        scheduleState:{},channelMessages:{},resourceDream:{},fileLinkPreview:{request:0},
+        scheduleState:{},channelMessages:{},resourceDream:{},fileLinkPreview:{request:0},observationState:{},
+        resetObservationState(){context.observationState={};},resetObservationTokens(){},
         envName:i=>i.displayName,showSnackbar:m=>messages.push(m),setEnvMenuOpen(){},renderEnvTabs(){context.syncEnvironmentGate();},
         showConfirm:async()=>true,ensureRegistryEnvironmentAccess:async()=>true,
         registryLoadToken:0,channelBindingTargetRequest:0,closeStarweaveStream(){},closeTeamSessionStream(){},closeDialog(){},
         loadConfig:async config=>{context.config=config;loaded.push(config);},
         fetch:async()=>new Response(JSON.stringify({robots:[{name:'new'}]})),
+        localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},
         Response,AbortController,TextDecoder,setTimeout,clearTimeout,...extra
     });
     context.window=context;
     vm.runInContext(section('var environmentGate=', 'var dirty='),context);
+    vm.runInContext(section('function rememberedEnvironment(', 'async function loadInstances('),context);
     vm.runInContext(section('async function switchInstance(', 'async function loadConfig('),context);
-    return {context,get,messages,loaded,locked};
+    return {context,get,messages,loaded,locked,storage};
 }
 test('switch locks the page immediately and publishes success only after target data is ready', async()=>{
     const fetchWait=deferred(),loadWait=deferred();
@@ -47,6 +50,7 @@ test('switch locks the page immediately and publishes success only after target 
     assert.equal(h.locked.inert,false);
     assert.equal(h.get('envSwitchStatus').hidden,true);
     assert.ok(h.messages.includes('已切换到 B'));
+    assert.equal(h.storage.get('starweave-environment'),'b');
 });
 test('failed preflight preserves original environment, configuration and dirty draft', async()=>{
     const h=harness({dirty:true,fetch:async()=>new Response('{}',{status:503})});const old=h.context.config;
@@ -61,10 +65,61 @@ test('cancelled confirmation releases switch lock without losing the draft', asy
 });
 test('target projection failure rolls back rather than showing switch success', async()=>{
     const h=harness({dirty:true});const old=h.context.config;
+    h.storage.set('starweave-environment','a');
     h.context.loadConfig=async config=>{h.context.config=config;if(config!==old)h.context.environmentGate.loadErrors.push(new Error('session query failed'));};
     await h.context.switchInstance('b');
     assert.equal(h.context.curInstance.instanceId,'a');assert.equal(h.context.config,old);assert.equal(h.context.dirty,true);
     assert.equal(h.messages.includes('已切换到 B'),false);assert.equal(h.locked.inert,false);
+    assert.equal(h.storage.get('starweave-environment'),'a');
+});
+test('initial discovery restores the remembered environment before API requests', async()=>{
+    let url;
+    const h=harness({curInstance:null,location:{hash:''},fetch:async target=>{
+        url=target;return new Response(JSON.stringify([{instanceId:'a',self:true},{instanceId:'remote-b',remote:true,online:true}]));
+    }});
+    h.storage.set('starweave-environment','remote-b');
+    vm.runInContext(section('async function api(', 'function envName('),h.context);
+    vm.runInContext(section('async function loadInstances(', 'function setEnvMenuOpen('),h.context);
+    await h.context.loadInstances(false);
+    assert.equal(h.context.curInstance.instanceId,'remote-b');
+    await h.context.api('/api/config');
+    assert.equal(url,'/api/config?instance=remote-b');
+});
+test('explicit URL environment takes precedence over the remembered selection', async()=>{
+    const h=harness({curInstance:null,location:{hash:'#instance=c'},api:async()=>new Response(JSON.stringify([{instanceId:'a',self:true},{instanceId:'b'},{instanceId:'c'}]))});
+    h.storage.set('starweave-environment','b');
+    vm.runInContext(section('async function loadInstances(', 'function setEnvMenuOpen('),h.context);
+    await h.context.loadInstances(false);
+    assert.equal(h.context.curInstance.instanceId,'c');
+});
+test('list refresh keeps the initial fallback when the URL points to an offline environment', async()=>{
+    const h=harness({curInstance:null,location:{hash:'#instance=remote-b'},api:async()=>new Response(JSON.stringify([{instanceId:'a',self:true},{instanceId:'remote-b',remote:true,online:false}]))});
+    vm.runInContext(section('async function loadInstances(', 'function setEnvMenuOpen('),h.context);
+    await h.context.loadInstances(false);
+    await h.context.loadInstances(false);
+    assert.equal(h.context.curInstance.instanceId,'a');
+});
+test('missing or offline remembered environment falls back without overwriting the preference', async()=>{
+    for(const saved of ['missing','remote-b']){
+        const h=harness({curInstance:null,location:{hash:''},api:async()=>new Response(JSON.stringify([{instanceId:'a',self:true},{instanceId:'remote-b',remote:true,online:false}]))});
+        h.storage.set('starweave-environment',saved);
+        vm.runInContext(section('async function loadInstances(', 'function setEnvMenuOpen('),h.context);
+        await h.context.loadInstances(false);
+        assert.equal(h.context.curInstance.instanceId,'a');
+        assert.equal(h.storage.get('starweave-environment'),saved);
+    }
+});
+test('selecting the current environment remembers it and unavailable storage does not block switching', async()=>{
+    const h=harness();await h.context.switchInstance('a');
+    assert.equal(h.storage.get('starweave-environment'),'a');
+    h.context.localStorage={getItem(){throw new Error('disabled')},setItem(){throw new Error('disabled')}};
+    await h.context.switchInstance('b');
+    assert.equal(h.context.curInstance.instanceId,'b');
+    h.context.curInstance=null;h.context.location.hash='';
+    h.context.api=async()=>new Response(JSON.stringify([{instanceId:'a',self:true}]));
+    vm.runInContext(section('async function loadInstances(', 'function setEnvMenuOpen('),h.context);
+    await h.context.loadInstances(false);
+    assert.equal(h.context.curInstance.instanceId,'a');
 });
 test('concurrent operations keep environment disabled until every workflow finishes', async()=>{
     const first=deferred(),second=deferred();let calls=0;

@@ -25,12 +25,14 @@ test('context budget and custom endpoint validation', () => {
   assert.throws(() => validateConfig({ ...config, baseUrl: 'file:///tmp/model' }), /HTTP/);
   assert.equal(commandText('<acp-harness>injected context</acp-harness>\n[Current Time: test]\n/compact keep progress'), '/compact keep progress');
 });
-test('Windows command quoting uses encoded PowerShell, Linux uses argv', () => {
+test('Windows command quoting uses encoded PowerShell, Linux and macOS use POSIX argv', () => {
   const command = 'Write-Output "中文 $hello `test`"';
   const win = shellInvocation(command, 'win32', { SystemRoot: 'C:\\Windows' });
   assert.equal(win.executable, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
   assert.ok(Buffer.from(win.args.at(-1), 'base64').toString('utf16le').endsWith(command));
   assert.deepEqual(shellInvocation('echo hello', 'linux').args, ['-c', 'echo hello']);
+  const posixCommand = 'printf "%s" "中文 $HOME"';
+  assert.deepEqual(shellInvocation(posixCommand, 'darwin'), { executable: '/bin/sh', args: ['-c', posixCommand] });
 });
 test('native shell execution, failure, timeout and abort', async () => {
   const tool = commandTool(os.tmpdir());

@@ -1,5 +1,8 @@
 # 内嵌引擎 · Pi
 
+Java 8 同进程移植版已作为独立模块提供，配置页名称为「内嵌引擎 · 星核」。
+配置、能力范围和旧会话导入说明见 [Java Pi 引擎](java-pi-engine.md)。本页描述原 Node Pi。
+
 新建智能体默认选择「内嵌引擎 · Pi」。填写模型 ID、OpenAI 兼容 API 的 Base URL 和独立 API Key 即可使用；现有智能体保留原运行引擎。高级设置默认折叠，包含上下文窗口（1000000 Token）和最大输出（64000 Token），默认 API 地址为 `https://api.deepseek.com`。上下文窗口包含输入和输出，压缩预算额外预留系统提示及工具结果空间。模型必须支持流式 Chat Completions 和工具调用；图片取决于实际模型能力。
 
 ## 分发与构建
@@ -8,7 +11,7 @@ MolaChat 注册使用默认头像 `img/pi.png`，显式配置的头像优先。�
 
 Pi 0.75.3 源码快照、ACP 适配参考源码、许可证及锁定依赖位于 `cmd-proxy-app/src/main/resources/embedded/pi/`。项目维护的 ACP 适配层位于 `integration/`；不运行参考适配器的 CLI 或 daemon。
 
-支持 Linux x64 和 Windows x64。使用内嵌 Pi 前需安装 **Node.js 22.19.0 或更高版本**，并确保启动 JAR 的进程 PATH 中可以找到 `node`（Windows 为 `node.exe`）。启动时检查 Node 版本，缺失或版本过低会明确提示；JAR 不携带、不下载、不安装 Node。Pi 及 npm 依赖随 JAR 分发，无需安装 npm/Pi 或配置全局 Pi，解压时核验依赖 SHA-256。当前支持范围不包含 ARM 或 macOS。
+支持 Linux x64、Windows x64，以及 macOS x64（Intel）和 ARM64（Apple Silicon）。使用内嵌 Pi 前需安装 **Node.js 22.19.0 或更高版本**，并确保启动 JAR 的进程 PATH 中可以找到 `node`（Windows 为 `node.exe`）。启动时检查 Node 版本，缺失或版本过低会明确提示；JAR 不携带、不下载、不安装 Node。Pi 及 npm 依赖随 JAR 分发，无需安装 npm/Pi 或配置全局 Pi，解压时核验依赖 SHA-256。Linux/Windows ARM64 暂不在支持范围内。macOS 同样使用系统 Node，不需要 Rosetta；请使用适合本机架构的 Node。通过桌面程序或服务启动时，也需确保启动进程的 PATH 包含 Node 所在目录（例如 Apple Silicon Homebrew 的 `/opt/homebrew/bin`）。
 
 ```bash
 node scripts/build-embedded-pi.mjs
@@ -30,7 +33,7 @@ mvn -pl cmd-proxy-app -DskipTests package
 | 模型配置 | 初始自定义模型；set_config_option 和兼容 set_model；实际请求使用配置的 max_tokens |
 | 流式回复 | 文本与思考事件分别映射；通知串行投递，完成前等待队列排空 |
 | 工具 | 起止与更新、原始参数、位置、文件 diff、权限请求；失败和超时投影为 failed |
-| Shell | Linux POSIX Shell；Windows 系统 PowerShell、UTF-8、EncodedCommand；取消终止子进程树 |
+| Shell | Linux/macOS POSIX Shell（`/bin/sh`）；Windows 系统 PowerShell、UTF-8、EncodedCommand；取消终止子进程树 |
 | MCP | stdio、Streamable HTTP、SSE；真实连接、分页发现、工具调用、超时和关闭 |
 | Skills | 智能体隔离目录和工作区 `.agents/skills`；不加载全局 Pi 配置或项目插件 |
 | 上下文用量 | usage_update；配置窗口与输出额度用于模型和压缩预算 |
@@ -50,4 +53,4 @@ node scripts/test-embedded-pi.mjs
 node cmd-proxy-app/src/test/js/embedded-pi-browser-test.js
 ```
 
-前者解压实际捆绑 Pi 依赖并通过系统 Node 执行，使用临时工作区和模拟 OpenAI/MCP 服务，不依赖真实密钥。GitHub Actions 在 Linux 和 Windows 分别验证 Node 22.19.0 和 24。后者使用 Playwright/Chrome 验证桌面和移动端配置表单。Java 测试运行时使用显式临时 `CMD_PROXY_HOME`，避免读取开发机认证和注册配置。
+前者解压实际捆绑 Pi 依赖并通过系统 Node 执行，使用临时工作区和模拟 OpenAI/MCP 服务，不依赖真实密钥。GitHub Actions 在 Linux、Windows、macOS Intel（`macos-15-intel`）和 Apple Silicon（`macos-15`）分别验证 Node 22.19.0 和 24，覆盖 Shell 执行/取消/超时、ACP 工具、MCP、压缩及会话恢复。Mac 实机验证结果以对应 CI 运行记录为准。后者使用 Playwright/Chrome 验证桌面和移动端配置表单。Java 测试运行时使用显式临时 `CMD_PROXY_HOME`，避免读取开发机认证和注册配置。

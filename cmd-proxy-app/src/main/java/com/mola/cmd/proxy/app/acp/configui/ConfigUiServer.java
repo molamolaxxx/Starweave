@@ -94,6 +94,7 @@ public class ConfigUiServer {
     private final StarweaveRequestDeduplicator starweaveRequests =
             new StarweaveRequestDeduplicator();
     private HttpServer server;
+    private com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager remoteAcpManager;
     private RegistryManager registryManager;
     private com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator teamCoordinator;
     private final EnvironmentHttpProxy environmentProxy = new EnvironmentHttpProxy();
@@ -236,7 +237,7 @@ public class ConfigUiServer {
 
     public void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress(port), 0);
-        executor = Executors.newFixedThreadPool(4);
+        executor = Executors.newFixedThreadPool(32);
         starweaveStreamExecutor = Executors.newFixedThreadPool(16, runnable -> {
             Thread thread = new Thread(runnable, "starweave-session-stream");
             thread.setDaemon(true);
@@ -270,6 +271,10 @@ public class ConfigUiServer {
         server.createContext("/api/schedules/v1/", proxied(this::handleSchedules));
         server.createContext("/api/observations/v1/", proxied(this::handleObservations));
         // REST API：带 instance 参数且非本环境时，转发到目标环境的 ConfigUI
+        remoteAcpManager = new com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager(Paths.get(CONFIG_PATH), refreshRobotCallback);
+        server.createContext("/api/remote-acp/discover", remoteAcpManager::handleDiscovery);
+        server.createContext("/api/remote-acp/mcp/", remoteAcpManager::handleMcp);
+        server.createContext("/api/remote-acp/status", proxied(remoteAcpManager::handleStatus));
         server.createContext("/api/config", proxied(this::handleConfig));
         server.createContext("/api/channels/status", proxied(this::handleChannelStatus));
         server.createContext("/api/channels/inbound", proxied(this::handleChannelInbound));
@@ -452,6 +457,7 @@ public class ConfigUiServer {
     }
 
     public void stop() {
+        if (remoteAcpManager != null) remoteAcpManager.close();
         if (teamCoordinator != null) teamCoordinator.close();
         if (registryManager != null) registryManager.close();
         environmentProxy.close();
@@ -812,6 +818,7 @@ public class ConfigUiServer {
         String raw = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
         // 通过 fastjson 解析再序列化，确保输出标准 JSON（消除尾逗号等非标准语法）
         JSONObject json = JSON.parseObject(raw);
+        if (remoteAcpManager != null) remoteAcpManager.project(json);
         appendDshRuntimeProjection(json);
         appendProviderRuntimeProjection(json);
         maskChannelSecrets(json);
@@ -1140,7 +1147,7 @@ public class ConfigUiServer {
             JSONObject request = JSON.parseObject(readBody(exchange, 64L * 1024L));
             if (request == null) request = new JSONObject(true);
             String action = request.getString("action");
-            if ("EMBEDDED_PI_ACP".equalsIgnoreCase(request.getString("provider"))) {
+            if (com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderType.isPi(request.getString("provider"))) {
                 JSONObject pi = request.getJSONObject("embeddedPi");
                 if (pi != null && SECRET_MASK.equals(pi.getString("apiKey"))) {
                     Path path = Paths.get(CONFIG_PATH);
@@ -2509,6 +2516,7 @@ public class ConfigUiServer {
         }
         try {
             AcpRobotParam robot = findConfiguredRobot(param(exchange, "robot"));
+            if ("REMOTE_STARCORE_ACP".equals(robot.getAgentProvider())) throw new IllegalArgumentException("远程资源迁移暂不支持，请在业务应用机器部署 Skills；记忆由 Starweave 管理");
             AgentResourceMigration migration = new AgentResourceMigration();
             if (importing) {
                 if (!"true".equals(param(exchange, "overwrite"))) {

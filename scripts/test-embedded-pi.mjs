@@ -1,4 +1,4 @@
-// Verifies bundled Pi dependencies and executes them with system Node on Linux or Windows.
+// Verifies bundled Pi dependencies and executes them with system Node on Linux, Windows or macOS.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';

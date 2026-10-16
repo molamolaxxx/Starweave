@@ -66,13 +66,20 @@ public final class EmbeddedPiRuntimeManager {
     }
 
     static String platform(String os, String arch) throws IOException {
-        String normalized = arch.toLowerCase(Locale.ROOT);
-        if (!"amd64".equals(normalized) && !"x86_64".equals(normalized) && !"x64".equals(normalized)) {
-            throw new IOException("内嵌 Pi 当前运行包仅支持 Linux/Windows x64，当前架构: " + arch);
-        }
         String name = os.toLowerCase(Locale.ROOT);
-        if (name.contains("windows")) return "win-x64";
-        if (name.contains("linux")) return "linux-x64";
+        String normalized = arch.toLowerCase(Locale.ROOT);
+        boolean x64 = "amd64".equals(normalized) || "x86_64".equals(normalized) || "x64".equals(normalized);
+        boolean arm64 = "aarch64".equals(normalized) || "arm64".equals(normalized);
+        // Darwin contains "win"; recognize macOS before selecting other systems.
+        if (name.contains("mac") || name.contains("darwin")) {
+            if (x64) return "darwin-x64";
+            if (arm64) return "darwin-arm64";
+            throw new IOException("内嵌 Pi 在 macOS 上仅支持 x64/ARM64，当前架构: " + arch);
+        }
+        if (name.contains("windows") || name.contains("linux")) {
+            if (!x64) throw new IOException("内嵌 Pi 在 Linux/Windows 上仅支持 x64，当前架构: " + arch);
+            return name.contains("windows") ? "win-x64" : "linux-x64";
+        }
         throw new IOException("内嵌 Pi 不支持当前系统: " + os);
     }
 

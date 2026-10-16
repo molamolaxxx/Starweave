@@ -59,6 +59,9 @@ public class ConversationHistoryManager {
     /** 当前 turn 的上下文消息，flushTurn 后清空 */
     private final List<ContextMessage> currentTurn = new ArrayList<>();
     private ContextMessage streamingAssistant;
+    private boolean uiAssistantActive;
+    private final StringBuilder uiAssistantText = new StringBuilder();
+    private static final String UI_ASSISTANT_SEGMENT = "UI_ASSISTANT_SEGMENT";
     private final java.util.Map<String, ContextMessage> acceptedUiMessages = new java.util.LinkedHashMap<>();
     private final Map<String, com.mola.cmd.proxy.app.acp.common.ChatHistoryPages> uiPages = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -90,7 +93,16 @@ public class ConversationHistoryManager {
 
     /** UI snapshot includes partial output; model history remains unchanged. */
     public synchronized List<ContextMessage> getUiHistory(String sessionId) {
-        List<ContextMessage> result = new ArrayList<>(getFullHistory(sessionId));
+        List<ContextMessage> result = new ArrayList<>();
+        for (ContextMessage message : getFullHistory(sessionId)) {
+            if (message.isUiHidden()) continue;
+            if (UI_ASSISTANT_SEGMENT.equals(message.getEventType())) {
+                JsonObject data = message.getEventData();
+                result.add(new ContextMessage(ContextMessage.Role.ASSISTANT,
+                        data.get("content").getAsString())
+                        .withIdentity(message.getMessageId(), message.getRevision()));
+            } else result.add(message);
+        }
         result.addAll(acceptedUiMessages.values());
         if (streamingAssistant != null) result.add(streamingAssistant);
         return result;
@@ -98,13 +110,29 @@ public class ConversationHistoryManager {
 
     /** Preserve an interrupted partial reply without carrying it into the next turn. */
     public synchronized void finishUiAssistant() {
+        finishUiAssistantSegment();
+        if (uiAssistantActive) {
+            currentTurn.add(new ContextMessage(ContextMessage.Role.ASSISTANT,
+                    uiAssistantText.toString()).withUiHidden(true));
+            uiAssistantActive = false;
+            uiAssistantText.setLength(0);
+        }
+    }
+
+    /** Commit only the UI segment; the model receives the complete reply once. */
+    private void finishUiAssistantSegment() {
         if (streamingAssistant != null) {
-            currentTurn.add(streamingAssistant);
+            JsonObject data = new JsonObject();
+            data.addProperty("content", streamingAssistant.getContent());
+            currentTurn.add(ContextMessage.event(UI_ASSISTANT_SEGMENT, data)
+                    .withIdentity(streamingAssistant.getMessageId(), streamingAssistant.getRevision() + 1L));
             streamingAssistant = null;
         }
     }
 
     public synchronized ContextMessage appendUiAssistant(String text) {
+        uiAssistantActive = true;
+        uiAssistantText.append(text);
         String id = streamingAssistant == null ? java.util.UUID.randomUUID().toString()
                 : streamingAssistant.getMessageId();
         String content = (streamingAssistant == null ? "" : streamingAssistant.getContent()) + text;
@@ -302,9 +330,11 @@ public class ConversationHistoryManager {
     /** 记录一条 agent 回答 */
     public synchronized void addAssistantMessage(String content) {
         ContextMessage message = new ContextMessage(ContextMessage.Role.ASSISTANT, content);
-        if (streamingAssistant != null) {
-            message.withIdentity(streamingAssistant.getMessageId(), content.length() + 1L);
-            streamingAssistant = null;
+        if (uiAssistantActive) {
+            finishUiAssistantSegment();
+            message.withUiHidden(true);
+            uiAssistantActive = false;
+            uiAssistantText.setLength(0);
         }
         currentTurn.add(message);
     }
@@ -317,6 +347,7 @@ public class ConversationHistoryManager {
 
     /** Records a UI-only business event alongside the turn without changing model context. */
     public synchronized void addEventMessage(String eventType, JsonObject eventData) {
+        finishUiAssistantSegment();
         currentTurn.add(ContextMessage.event(eventType, eventData));
     }
 
@@ -492,6 +523,7 @@ public class ConversationHistoryManager {
      * @param sessionId 当前会话 ID
      */
     public synchronized void flushTurn(String sessionId) {
+        finishUiAssistant();
         if (currentTurn.isEmpty() || sessionId == null) {
             return;
         }
@@ -515,6 +547,8 @@ public class ConversationHistoryManager {
             logger.error("会话上下文落盘失败, sessionId={}", sessionId, e);
         } finally {
             currentTurn.clear();
+            uiAssistantActive = false;
+            uiAssistantText.setLength(0);
         }
 
         // 通知外部回调（如每 N 轮触发记忆提取）
@@ -531,6 +565,7 @@ public class ConversationHistoryManager {
      * 强制落盘（用于 close 等场景的兜底）。
      */
     public synchronized void forceFlush(String sessionId) {
+        finishUiAssistant();
         if (!currentTurn.isEmpty()) {
             flushTurn(sessionId);
         }
@@ -791,6 +826,8 @@ public class ConversationHistoryManager {
      */
     public synchronized void reset() {
         streamingAssistant = null;
+        uiAssistantActive = false;
+        uiAssistantText.setLength(0);
         acceptedUiMessages.clear();
         currentTurn.clear();
         fileAbsolutePaths.clear();
@@ -994,6 +1031,7 @@ public class ConversationHistoryManager {
         obj.addProperty("role", msg.getRole().name());
         if (msg.getMessageId() != null) obj.addProperty("messageId", msg.getMessageId());
         obj.addProperty("revision", msg.getRevision());
+        if (msg.isUiHidden()) obj.addProperty("uiHidden", true);
         if (msg.getRole() == ContextMessage.Role.TOOL) {
             obj.addProperty("toolCallId", msg.getToolCallId());
             obj.addProperty("toolName", msg.getToolName());
@@ -1023,7 +1061,8 @@ public class ConversationHistoryManager {
     private ContextMessage deserializeMessage(JsonObject obj) {
         return deserializeMessageBody(obj).withIdentity(
                 obj.has("messageId") ? obj.get("messageId").getAsString() : null,
-                obj.has("revision") ? obj.get("revision").getAsLong() : 0L);
+                obj.has("revision") ? obj.get("revision").getAsLong() : 0L)
+                .withUiHidden(obj.has("uiHidden") && obj.get("uiHidden").getAsBoolean());
     }
 
     private ContextMessage deserializeMessageBody(JsonObject obj) {

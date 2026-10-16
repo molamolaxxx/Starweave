@@ -30,7 +30,7 @@ public final class EmbeddedPiConfigStore {
             JSONObject pi = robot.getJSONObject("embeddedPi");
             String copySource = robot.getString("_piCopyFromStateId"); robot.remove("_piCopyFromStateId");
             if (pi == null) {
-                if (!"EMBEDDED_PI_ACP".equalsIgnoreCase(robot.getString("agentProvider"))) continue;
+                if (!com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderType.isPi(robot.getString("agentProvider"))) continue;
                 pi = new JSONObject(true); robot.put("embeddedPi", pi);
             }
             String id = pi.getString("stateId");
@@ -47,7 +47,8 @@ public final class EmbeddedPiConfigStore {
             if (!pi.containsKey("baseUrl")) pi.put("baseUrl", "https://api.deepseek.com");
             if (!pi.containsKey("contextWindow")) pi.put("contextWindow", 1000000);
             if (!pi.containsKey("maxTokens")) pi.put("maxTokens", 64000);
-            if ("EMBEDDED_PI_ACP".equalsIgnoreCase(robot.getString("agentProvider"))) {
+            if (com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderType.isPi(robot.getString("agentProvider"))
+                    && !("REMOTE_STARCORE_ACP".equals(robot.getString("agentProvider")) && (blank(robot.getString("model")) || blank(pi.getString("apiKey"))))) {
                 pi.toJavaObject(EmbeddedPiConfig.class).validate(robot.getString("model"));
             }
         }

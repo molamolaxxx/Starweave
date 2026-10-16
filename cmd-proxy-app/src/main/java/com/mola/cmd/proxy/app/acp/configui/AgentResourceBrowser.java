@@ -34,6 +34,8 @@ final class AgentResourceBrowser {
 
     JSONObject tree(AcpRobotParam robot, String kind) {
         requireKind(kind);
+        if ("REMOTE_STARCORE_ACP".equals(robot.getAgentProvider()) && SKILL.equals(kind))
+            throw new IllegalArgumentException("远程 Skills 位于业务应用机器，请随应用部署");
         JSONObject result = new JSONObject(true);
         result.put("ok", true);
         result.put("kind", kind);
@@ -57,6 +59,8 @@ final class AgentResourceBrowser {
 
     JSONObject content(AcpRobotParam robot, String kind, String resourceId) {
         requireKind(kind);
+        if ("REMOTE_STARCORE_ACP".equals(robot.getAgentProvider()) && SKILL.equals(kind))
+            throw new IllegalArgumentException("远程 Skills 位于业务应用机器，请随应用部署");
         if (resourceId == null || !resourceId.matches("r\\d+(?:/[^\\r\\n]*)?")) {
             throw new IllegalArgumentException("invalid resource id");
         }

@@ -7,12 +7,18 @@ package com.mola.cmd.proxy.app.acp.acpclient.agent;
 public enum AgentProviderType {
 
     EMBEDDED_PI_ACP,
+    JAVA_PI_ACP,
+    REMOTE_STARCORE_ACP,
 
     KIRO_CLI,
     OPENCODE,
     CLAUDE_AGENT_ACP,
     CODEX_ACP,
     DEEPSEEK_HARNESS_ACP;
+
+    public static boolean isPi(String value) {
+        return "EMBEDDED_PI_ACP".equalsIgnoreCase(value) || "JAVA_PI_ACP".equalsIgnoreCase(value) || "REMOTE_STARCORE_ACP".equalsIgnoreCase(value);
+    }
 
     /**
      * 从字符串解析，不区分大小写，无法匹配时返回默认值 KIRO_CLI。

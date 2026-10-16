@@ -22,6 +22,16 @@ import java.util.Map;
  */
 public interface AgentProvider {
 
+    /** Optional alternate transport; null preserves the existing process launch path. */
+    default com.mola.starweave.agent.transport.AcpTransport openTransport(AcpRobotParam robot, Map<String, String> environment) throws IOException { return null; }
+
+    default boolean isInProcess() { return false; }
+
+    /** Optional in-JVM ACP stream runtime. Null preserves the existing OS process path. */
+    default Process openEmbeddedRuntime(AcpRobotParam robot, Map<String, String> environment) throws IOException {
+        return null;
+    }
+
     /**
      * Keeps a version-managed Provider runtime protected for the lifetime of its
      * child process. Ordinary providers use the no-op lease.

@@ -74,6 +74,8 @@ final class ProviderModelDiscoveryService {
         AgentProviderType type = AgentProviderType.fromString(provider);
         switch (type) {
             case EMBEDDED_PI_ACP:
+            case JAVA_PI_ACP:
+            case REMOTE_STARCORE_ACP:
                 return discoverEmbeddedPi(request);
             case OPENCODE:
                 return discoverOpenCode(request, force);

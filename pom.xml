@@ -10,6 +10,8 @@
     <packaging>pom</packaging>
     <modules>
         <module>cmd-proxy-client</module>
+        <module>starweave-agent</module>
+        <module>starweave-agent-sdk</module>
         <module>cmd-proxy-app</module>
     </modules>
 

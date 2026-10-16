@@ -221,10 +221,10 @@ var error=document.getElementById('channelError_'+i);if(error){var message=(chan
 });
 }
 async function deleteRobot(i){
-var robot=config.robots[i];if(!robot||!await showConfirm('删除智能体「'+(robot.name||'')+'」后将立即保存配置。',{title:'删除智能体？',confirmText:'删除智能体',danger:true}))return;var wasDirty=dirty;config.robots.splice(i,1);markDirty();var ok=await saveConfig(true);if(!ok){config.robots.splice(i,0,robot);dirty=wasDirty;render();return}render();showSnackbar('智能体已删除并保存');
+var robot=config.robots[i];if(robot&&robot.agentProvider==='REMOTE_STARCORE_ACP'&&robot.enabled!==false){showSnackbar('生效的远程星核不能删除，请先断开连接，失效后再删除');return}if(!robot||!await showConfirm('删除智能体「'+(robot.name||'')+'」后将立即保存配置。',{title:'删除智能体？',confirmText:'删除智能体',danger:true}))return;var wasDirty=dirty;config.robots.splice(i,1);markDirty();var ok=await saveConfig(true);if(!ok){config.robots.splice(i,0,robot);dirty=wasDirty;render();return}render();showSnackbar('智能体已删除并保存');
 }
 async function toggleRobot(i,enabled){
-var robot=config.robots[i];if(!robot)return;var key=robot.name||'';
+var robot=config.robots[i];if(!robot)return;if(robot.agentProvider==='REMOTE_STARCORE_ACP'){showSnackbar('远程星核状态由连接自动维护');renderRobots();return}var key=robot.name||'';
 if(itemOperationPending('robots',key)){renderRobots();showSnackbar(itemRefreshMessage('robots',key));return}
 var previous=robot.enabled!==false,wasDirty=dirty;robot.enabled=enabled;markDirty();setItemTogglePending('robots',key,true);
 var ok=await saveConfig(true);if(!ok){robot.enabled=previous;dirty=wasDirty;setItemTogglePending('robots',key,false);return}

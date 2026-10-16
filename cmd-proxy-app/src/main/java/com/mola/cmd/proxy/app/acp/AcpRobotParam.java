@@ -81,7 +81,7 @@ public class AcpRobotParam {
         if (avatar != null && !avatar.isEmpty()) {
             return avatar;
         }
-        if ("EMBEDDED_PI_ACP".equalsIgnoreCase(agentProvider)) {
+        if (com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderType.isPi(agentProvider)) {
             return "img/pi.png";
         }
         if ("OPENCODE".equalsIgnoreCase(agentProvider)) {

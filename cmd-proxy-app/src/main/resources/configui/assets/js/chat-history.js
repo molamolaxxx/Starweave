@@ -29,19 +29,45 @@ if(!found)box.scrollTop=state.top;
 state.top=box.scrollTop;state.height=box.scrollHeight;
 requestAnimationFrame(function(){state.adjusting=false});
 }
+// Keep existing cards, images and scrollable details connected while text streams.
+function patchChatNode(current,next){
+if(current.nodeType!==next.nodeType||current.nodeName!==next.nodeName){current.replaceWith(next);return next}
+if(current.nodeType!==1){if(current.nodeValue!==next.nodeValue)current.nodeValue=next.nodeValue;return current}
+Array.prototype.slice.call(current.attributes).forEach(function(attr){if(current.tagName==='DETAILS'&&attr.name==='open')return;if(!next.hasAttribute(attr.name))current.removeAttribute(attr.name)});
+Array.prototype.forEach.call(next.attributes,function(attr){if(current.tagName==='DETAILS'&&attr.name==='open')return;if(current.getAttribute(attr.name)!==attr.value)current.setAttribute(attr.name,attr.value)});
+var oldChildren=Array.prototype.slice.call(current.childNodes),newChildren=Array.prototype.slice.call(next.childNodes);
+newChildren.forEach(function(child,index){if(oldChildren[index])patchChatNode(oldChildren[index],child);else current.appendChild(child)});
+oldChildren.slice(newChildren.length).forEach(function(child){child.remove()});
+return current;
+}
+function patchChatRows(content,html,keys,state){
+var template=document.createElement('template');template.innerHTML=html;
+var existing=new Map(),previous=state.rowHtml||new Map(),updated=new Map(),index=0;
+function rowKey(node){return node.classList.contains('chat-history-status')?'history-status':node.getAttribute('data-chat-key')}
+Array.prototype.forEach.call(content.children,function(node){existing.set(rowKey(node),node)});
+var cursor=content.firstChild;
+Array.prototype.slice.call(template.content.children).forEach(function(next){
+if(!next.classList.contains('chat-history-status')){if(!next.hasAttribute('data-chat-key'))next.setAttribute('data-chat-key',keys[index]||'pending:'+index);index++}
+var key=rowKey(next),markup=next.outerHTML,current=existing.get(key),atCursor=current===cursor;
+if(current){existing.delete(key);if(previous.get(key)!==markup)current=patchChatNode(current,next)}else current=next;
+if(atCursor)cursor=current;
+if(current!==cursor)content.insertBefore(current,cursor);
+cursor=current.nextSibling;updated.set(key,markup);
+});
+existing.forEach(function(node){node.remove()});state.rowHtml=updated;
+}
 function renderChatViewport(box,html,keys,scope,owner){
 var state=chatViewportStates.get(box);
 if(!state||state.scope!==scope){
 if(state&&state.observer)state.observer.disconnect();
 state={scope:scope,follow:owner.followOutput!==false,owner:owner,top:0,height:0,anchor:null,adjusting:false};chatViewportStates.set(box,state);
+box.replaceChildren();
 }else{state.follow=owner.followOutput!==false;state.top=box.scrollTop;state.anchor=state.follow?null:chatVisibleAnchor(box)}
-var expanded={};box.querySelectorAll('[data-chat-key]').forEach(function(row){expanded[row.getAttribute('data-chat-key')]=Array.prototype.map.call(row.querySelectorAll('details'),function(detail){return detail.open})});
 var content=box.querySelector('.chat-message-content');
 if(!content){box.innerHTML='';content=document.createElement('div');content.className='chat-message-content';box.appendChild(content)}
 if(state.observer&&state.content!==content){state.observer.disconnect();state.observer=null}
 state.content=content;
-content.innerHTML=html;
-var index=0;Array.prototype.forEach.call(content.children,function(node){if(node.classList.contains('chat-history-status'))return;if(!node.hasAttribute('data-chat-key'))node.setAttribute('data-chat-key',keys[index]||'pending:'+index);var opened=expanded[node.getAttribute('data-chat-key')];if(opened)node.querySelectorAll('details').forEach(function(detail,i){detail.open=!!opened[i]});index++});
+patchChatRows(content,html,keys,state);
 chatRestoreViewport(box,state);
 if(!state.observer&&typeof ResizeObserver!=='undefined'){
 state.observer=new ResizeObserver(function(){if(chatViewportStates.get(box)===state)chatRestoreViewport(box,state)});

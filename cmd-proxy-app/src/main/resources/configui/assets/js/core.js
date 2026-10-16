@@ -263,6 +263,9 @@ var i=Math.max(h.lastIndexOf('/'),h.lastIndexOf('\\'));
 return i>=0?h.substring(i+1):h;
 }
 
+function rememberedEnvironment(){try{return localStorage.getItem('starweave-environment')||''}catch(e){return ''}}
+function rememberEnvironment(id){try{localStorage.setItem('starweave-environment',id)}catch(e){}}
+
 async function loadInstances(manual){
 if(environmentGate.switching)return;
 try{
@@ -271,9 +274,13 @@ instances=await r.json();
 }catch(e){instances=[];showSnackbar('环境列表加载失败:'+e.message)}
 if(!instances.length){renderEnvTabs();return}
 var want=(location.hash.match(/instance=([^&]+)/)||[])[1];
-want=want?decodeURIComponent(want):(curInstance&&curInstance.instanceId);
+try{want=want?decodeURIComponent(want):''}catch(e){want=''}
+want=curInstance?curInstance.instanceId:(want||rememberedEnvironment());
 var found=instances.filter(function(i){return i.instanceId===want})[0];
-if(!curInstance)curInstance=found||instances.filter(function(i){return i.self})[0]||instances[0];
+if(!curInstance){
+var available=instances.filter(function(i){return !i.remote||i.online!==false});
+curInstance=(found&&(!found.remote||found.online!==false)?found:null)||available.filter(function(i){return i.self})[0]||available[0]||instances[0];
+}
 else if(found)curInstance=found;
 renderEnvTabs();
 if(manual)showSnackbar('环境列表已刷新（'+instances.length+' 个）');
@@ -309,7 +316,7 @@ syncEnvironmentGate();
 async function switchInstance(id){
 if(environmentGate.switching||environmentOperationPending()){showSnackbar(environmentGate.switching?'环境正在切换，请稍候':'当前操作完成后可切换环境');return}
 if(environmentGate.recoveryRequired&&curInstance&&id!==curInstance.instanceId){showSnackbar('请先重新选择当前环境，确认环境状态');return}
-if(curInstance&&curInstance.instanceId===id&&!environmentGate.recoveryRequired){setEnvMenuOpen(false);document.getElementById('envTrigger').focus();return}
+if(curInstance&&curInstance.instanceId===id&&!environmentGate.recoveryRequired){rememberEnvironment(id);setEnvMenuOpen(false);document.getElementById('envTrigger').focus();return}
 var target=instances.filter(function(i){return i.instanceId===id})[0];
 if(!target)return;
 if(target.remote&&target.online===false){showSnackbar('目标环境离线');return}
@@ -348,6 +355,7 @@ if(activePage==='observations')await loadObservations(false);
 if(environmentGate.loadErrors.length)throw environmentGate.loadErrors[0];
 environmentGate.recoveryRequired=false;
 location.hash='instance='+encodeURIComponent(id);
+rememberEnvironment(id);
 renderEnvTabs();
 showSnackbar('已切换到 '+envName(target));
 }catch(e){if(committed){
