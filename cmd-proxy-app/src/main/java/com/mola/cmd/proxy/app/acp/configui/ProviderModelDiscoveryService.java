@@ -5,6 +5,9 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderType;
 import com.mola.cmd.proxy.app.acp.acpclient.agent.NpmProviderRuntimeManager;
+import com.mola.cmd.proxy.app.acp.AcpRobotParam;
+import com.mola.cmd.proxy.app.acp.memory.model.MemoryConfig;
+import com.mola.cmd.proxy.app.acp.acpclient.model.SmallModelSelector;
 import com.mola.cmd.proxy.app.acp.acpclient.model.AgentModelCatalog;
 import com.mola.cmd.proxy.app.acp.common.PathResolver;
 
@@ -29,7 +32,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
 /** Provider-specific live model discovery used by ConfigUI. */
-final class ProviderModelDiscoveryService {
+public final class ProviderModelDiscoveryService {
 
     private static final int HTTP_TIMEOUT_MILLIS = 12_000;
     private static final int PROCESS_TIMEOUT_SECONDS = 20;
@@ -60,6 +63,23 @@ final class ProviderModelDiscoveryService {
         JSONObject result = catalog.snapshot(request);
         if (warning != null) result.put("warning", warning);
         return result;
+    }
+
+    /** Select an explicitly configured small model or discover one for this provider/account. */
+    public static String findSmallModel(AcpRobotParam robot) {
+        return new ProviderModelDiscoveryService(AgentModelCatalog.getInstance()).selectSmallModel(robot);
+    }
+
+    String selectSmallModel(AcpRobotParam robot) {
+        MemoryConfig memory = robot.getMemory();
+        String preferred = memory == null ? null : memory.getExecutionModel();
+        if (SmallModelSelector.isSmallModel(preferred)) return preferred.trim();
+        if (SmallModelSelector.isSmallModel(robot.getModel())) return robot.getModel().trim();
+        JSONObject request = (JSONObject) JSON.toJSON(robot);
+        request.put("provider", robot.getAgentProvider());
+        JSONObject result = models(request, false);
+        if (result.containsKey("warning")) return null;
+        return SmallModelSelector.select(result.getJSONArray("models"));
     }
 
     void remember(JSONObject request) throws IOException {

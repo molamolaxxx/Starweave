@@ -13,7 +13,7 @@ public class ConfigUiLayoutContractTest {
         assertTrue(html.contains("自动睡眠"));
         assertTrue(html.contains("id=\"dAutoSleep\""));
         assertTrue(html.contains("id=\"dAutoSleepIdle\""));
-        assertTrue(html.contains("autoSleep:{enabled:false,idleMinutes:30}"));
+        assertTrue(html.contains("scheduleEnabled:true,observationEnabled:true,autoSleep:{enabled:true,idleMinutes:30}"));
         assertTrue(html.contains("function isAgentOperable(state)"));
         assertTrue(html.contains("state==='READY'||state==='SLEEP'"));
         assertTrue(html.contains(".session-status.sleep"));
@@ -543,7 +543,7 @@ public class ConfigUiLayoutContractTest {
         assertTrue(html.contains("function loadRobotModels(force)"));
         assertTrue(html.contains("function rememberRobotModels(robot)"));
         assertTrue(html.contains("/api/provider-models"));
-        assertTrue(html.contains("与主模型共用实时目录和自定义历史"));
+        assertTrue(html.contains("新建时尝试从当前引擎模型目录选择小模型"));
         assertTrue(html.contains("留空则沿用主模型"));
         assertTrue(html.contains("await rememberRobotModels(robot)"));
     }

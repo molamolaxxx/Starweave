@@ -35,4 +35,23 @@ public class EmbeddedPiModelDiscoveryTest {
             assertFalse(result.toJSONString().contains("private-model")); assertNotNull(result.getString("warning"));
         } finally { server.stop(0); }
     }
+    @Test public void selectsConfiguredSmallModelOrDiscoversWithoutLargeModelFallback() throws Exception {
+        AgentModelCatalog catalog = new AgentModelCatalog(temporary.newFolder().toPath().resolve("small-models.json"));
+        ProviderModelDiscoveryService service = new ProviderModelDiscoveryService(catalog);
+        com.mola.cmd.proxy.app.acp.AcpRobotParam robot = new com.mola.cmd.proxy.app.acp.AcpRobotParam();
+        robot.setAgentProvider("KIRO_CLI"); robot.setWorkDir(temporary.newFolder().getAbsolutePath());
+        robot.setModel("main-large");
+        assertNull(service.selectSmallModel(robot));
+        robot.setModel("gpt-6-luna"); assertEquals("gpt-6-luna", service.selectSmallModel(robot));
+        com.mola.cmd.proxy.app.acp.memory.model.MemoryConfig memory = new com.mola.cmd.proxy.app.acp.memory.model.MemoryConfig();
+        memory.setModel("memory-mini"); robot.setMemory(memory);
+        assertEquals("memory-mini", service.selectSmallModel(robot));
+        robot.setModel("main-large"); memory.setModel("memory-large");
+        JSONObject request = (JSONObject) JSON.toJSON(robot); request.put("provider", robot.getAgentProvider());
+        catalog.replaceLive(request, java.util.Arrays.asList(new AgentModelCatalog.ModelEntry("available-luna", "Luna")), "acp");
+        assertEquals("available-luna", service.selectSmallModel(robot));
+        catalog.replaceLive(request, java.util.Arrays.asList(new AgentModelCatalog.ModelEntry("available-large", "Large")), "acp");
+        assertNull(service.selectSmallModel(robot));
+    }
+
 }

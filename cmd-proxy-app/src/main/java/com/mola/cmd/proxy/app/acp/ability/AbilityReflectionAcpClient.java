@@ -14,7 +14,7 @@ import java.util.concurrent.*;
  * 能力反思专用子 Client，继承 {@link AbstractAcpClient}。
  * <p>
  * 与 MemoryAcpClient 类似，不加载任何 MCP Server，同步阻塞模式。
- * kiro-cli 会自动加载 workspacePath 下的 skills 到上下文中。
+ * 提取材料由调用方显式提供；提示词排除引擎自动加载的用户级通用 Skills。
  */
 public class AbilityReflectionAcpClient extends AbstractAcpClient {
 
@@ -28,10 +28,19 @@ public class AbilityReflectionAcpClient extends AbstractAcpClient {
     });
 
     public AbilityReflectionAcpClient(String workspacePath, String groupId,
-                                      int timeoutSeconds, AcpRobotParam robotParam) {
+                                      int timeoutSeconds, AcpRobotParam robotParam, String smallModel) {
         super(AgentProviderRouter.getInstance().resolve(robotParam.getAgentProvider()),
-                workspacePath, groupId, robotParam);
+                workspacePath, groupId, buildEffectiveParam(robotParam, smallModel));
         this.timeoutSeconds = timeoutSeconds;
+    }
+
+    static AcpRobotParam buildEffectiveParam(AcpRobotParam original, String smallModel) {
+        if (smallModel == null || smallModel.trim().isEmpty()) {
+            throw new IllegalArgumentException("能力提取必须指定已选择的小模型");
+        }
+        AcpRobotParam copy = new Gson().fromJson(new Gson().toJson(original), AcpRobotParam.class);
+        copy.setModel(smallModel.trim());
+        return copy;
     }
 
     @Override

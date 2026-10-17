@@ -2,6 +2,7 @@ package com.mola.cmd.proxy.app.acp.ability;
 
 import com.google.gson.*;
 import com.mola.cmd.proxy.app.acp.AcpRobotParam;
+import com.mola.cmd.proxy.app.acp.configui.ProviderModelDiscoveryService;
 import com.mola.cmd.proxy.app.acp.common.PathUtils;
 import com.mola.cmd.proxy.app.acp.acpclient.McpConfigLoader;
 import com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderRouter;
@@ -11,7 +12,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -22,7 +22,7 @@ import java.util.concurrent.*;
 /**
  * 能力反思服务，独立于记忆系统。
  * <p>
- * 结合 skills（kiro-cli 自动注入）、记忆概要和 MCP 工具列表，
+ * 结合显式工作区 skills、记忆概要和 MCP 工具列表，排除用户级通用 skills，
  * 让 LLM 反思自身能力，将结果持久化到 .cmd-proxy/ability/{sanitized-robotName}/ability.md。
  * <p>
  * 触发时机：AcpClient 初始化时调用 {@link #submitReflection()}，内部判断是否需要执行：
@@ -39,6 +39,7 @@ public class AbilityReflectionService {
     private static final Logger logger = LoggerFactory.getLogger(AbilityReflectionService.class);
     private static final String BASE_DIR = com.mola.cmd.proxy.app.utils.CmdProxyHome.pathOf("ability");
     private static final String ABILITY_FILE = "ability.md";
+    private static final int POLICY_VERSION = 2;
     private static final String SNAPSHOT_FILE = "snapshot.json";
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -94,7 +95,7 @@ public class AbilityReflectionService {
         }
     }
 
-    private void checkAndReflect() {
+    void checkAndReflect() {
         try {
             Path abilityFile = getAbilityFilePath();
             if (!Files.exists(abilityFile)) {
@@ -105,8 +106,8 @@ public class AbilityReflectionService {
 
             // 加载上次快照
             Snapshot lastSnapshot = loadSnapshot();
-            if (lastSnapshot == null) {
-                logger.info("快照不存在，触发能力反思, robotName={}", robotName);
+            if (lastSnapshot == null || lastSnapshot.policyVersion != POLICY_VERSION) {
+                logger.info("快照缺失或提取策略已更新，触发能力反思, robotName={}", robotName);
                 doReflection();
                 return;
             }
@@ -118,13 +119,14 @@ public class AbilityReflectionService {
             String currentDreamTime = getLastDreamTime();
 
             boolean skillsChanged = !currentSkillsHash.equals(lastSnapshot.skillsHash);
+            boolean profileChanged = !computeProfileHash().equals(lastSnapshot.profileHash);
             boolean mcpChanged = !currentMcpHash.equals(lastSnapshot.mcpHash);
             boolean dreamOccurred = currentDreamTime != null
                     && !currentDreamTime.equals(lastSnapshot.lastDreamTime);
 
-            if (skillsChanged || mcpChanged || dreamOccurred) {
-                logger.info("检测到变动，触发能力反思, robotName={}, skills={}, mcp={}, dream={}",
-                        robotName, skillsChanged, mcpChanged, dreamOccurred);
+            if (skillsChanged || mcpChanged || dreamOccurred || profileChanged) {
+                logger.info("检测到变动，触发能力反思, robotName={}, skills={}, mcp={}, dream={}, profile={}",
+                        robotName, skillsChanged, mcpChanged, dreamOccurred, profileChanged);
                 doReflection();
             } else {
                 logger.debug("无变动，跳过能力反思, robotName={}", robotName);
@@ -139,6 +141,12 @@ public class AbilityReflectionService {
     private void doReflection() {
         logger.info("开始能力反思, robotName={}, workspacePath={}", robotName, workspacePath);
         try {
+            String smallModel = resolveSmallModel();
+            if (smallModel == null || smallModel.trim().isEmpty()) {
+                logger.info("未找到可用小模型，保留现有能力描述并跳过提取, robotName={}", robotName);
+                return;
+            }
+            Map<String, String> workspaceSkills = loadWorkspaceSkills();
             List<String> mcpServerNames = loadMcpServerNames();
             String memorySummary = "";
             if (memoryManager != null) {
@@ -149,19 +157,12 @@ public class AbilityReflectionService {
                 }
             }
 
-            String prompt = AbilityReflectionPromptTemplate.build(mcpServerNames, memorySummary);
-            String groupId = "ability_reflection__" + robotName.hashCode();
-
-            String response;
-            try (AbilityReflectionAcpClient client = new AbilityReflectionAcpClient(
-                    workspacePath, groupId, timeoutSeconds, robotParam)) {
-                client.start();
-                response = client.sendPromptSync(prompt);
-            }
+            String prompt = AbilityReflectionPromptTemplate.build(mcpServerNames, memorySummary, workspaceSkills, robotParam.getSignature());
+            String response = runReflection(prompt, smallModel);
 
             if (response != null && !response.trim().isEmpty()) {
                 writeAbilityFile(stripPreamble(response.trim()));
-                saveSnapshot(mcpServerNames);
+                saveSnapshot(mcpServerNames, workspaceSkills);
                 logger.info("能力反思完成, robotName={}", robotName);
             } else {
                 logger.warn("能力反思子 Client 返回为空, robotName={}", robotName);
@@ -171,12 +172,28 @@ public class AbilityReflectionService {
         }
     }
 
+    String resolveSmallModel() {
+        return ProviderModelDiscoveryService.findSmallModel(robotParam);
+    }
+
+    String runReflection(String prompt, String smallModel) throws IOException {
+        String groupId = "ability_reflection__" + robotName.hashCode();
+        try (AbilityReflectionAcpClient client = new AbilityReflectionAcpClient(
+                workspacePath, groupId, timeoutSeconds, robotParam, smallModel)) {
+            logger.info("能力提取使用小模型: {}, robotName={}", smallModel, robotName);
+            client.start();
+            return client.sendPromptSync(prompt);
+        }
+    }
+
     // ==================== 快照管理 ====================
 
     /**
      * 快照模型，记录上次反思时的各项指纹。
      */
     private static class Snapshot {
+        int policyVersion;
+        String profileHash;
         String skillsHash;
         String mcpHash;
         String lastDreamTime;
@@ -195,9 +212,11 @@ public class AbilityReflectionService {
         }
     }
 
-    private void saveSnapshot(List<String> mcpServerNames) {
+    private void saveSnapshot(List<String> mcpServerNames, Map<String, String> workspaceSkills) {
         Snapshot snapshot = new Snapshot();
-        snapshot.skillsHash = computeSkillsHash();
+        snapshot.policyVersion = POLICY_VERSION;
+        snapshot.profileHash = computeProfileHash();
+        snapshot.skillsHash = computeHash(GSON.toJson(workspaceSkills));
         snapshot.mcpHash = computeHash(String.join(",", mcpServerNames));
         snapshot.lastDreamTime = getLastDreamTime();
         snapshot.reflectionTime = java.time.ZonedDateTime.now()
@@ -214,38 +233,17 @@ public class AbilityReflectionService {
 
     // ==================== 指纹计算 ====================
 
-    /**
-     * 计算 skills 目录下所有 skill 子目录名的聚合哈希。
-     * 通过 AgentProvider 获取 skills 相对路径，兼容不同 agent 实现。
-     */
-    private String computeSkillsHash() {
-        String skillsRelPath = AgentProviderRouter.getInstance()
-                .resolve(robotParam.getAgentProvider()).getSkillsRelativePath();
-        Path skillsDir = Paths.get(workspacePath, skillsRelPath);
-        if (!Files.exists(skillsDir) || !Files.isDirectory(skillsDir)) {
-            return "empty";
-        }
-        try {
-            TreeSet<String> parts = new TreeSet<>();
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(skillsDir)) {
-                for (Path entry : stream) {
-                    if (Files.isDirectory(entry)) {
-                        Path skillFile = entry.resolve("SKILL.md");
-                        if (Files.exists(skillFile)) {
-                            String content = new String(Files.readAllBytes(skillFile), StandardCharsets.UTF_8);
-                            parts.add(entry.getFileName().toString() + ":" + computeHash(content));
-                        } else {
-                            parts.add(entry.getFileName().toString());
-                        }
-                    }
-                }
-            }
-            if (parts.isEmpty()) return "empty";
-            return computeHash(parts.toString());
-        } catch (IOException e) {
-            logger.warn("计算 skills 哈希失败", e);
-            return "error";
-        }
+    private Map<String, String> loadWorkspaceSkills() throws IOException {
+        return WorkspaceSkillLoader.load(AgentProviderRouter.getInstance()
+                .resolve(robotParam.getAgentProvider()), workspacePath, robotParam);
+    }
+
+    private String computeSkillsHash() throws IOException {
+        return computeHash(GSON.toJson(loadWorkspaceSkills()));
+    }
+
+    private String computeProfileHash() {
+        return computeHash(robotName + "\n" + workspacePath + "\n" + robotParam.getSignature());
     }
 
     /**
@@ -305,7 +303,7 @@ public class AbilityReflectionService {
         return getProjectDir().resolve(ABILITY_FILE);
     }
 
-    private Path getProjectDir() {
+    Path getProjectDir() {
         return Paths.get(BASE_DIR, PathUtils.sanitizePath(robotName));
     }
 

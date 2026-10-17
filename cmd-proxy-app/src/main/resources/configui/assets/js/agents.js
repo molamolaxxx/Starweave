@@ -1,7 +1,9 @@
 var robotModelRequestSequence=0,robotModelCatalog=[],robotModelCatalogLoading=false;
+var robotMemoryModelAutoSelect=false,robotMemoryModelAutoValue='';
 function openRobotDialog(idx,mode){
 robotDialogMode=mode==='copy'?'copy':(idx>=0?'edit':'add');robotDialogSourceIndex=idx;editIdx=robotDialogMode==='edit'?idx:-1;
-var r=idx>=0?JSON.parse(JSON.stringify(config.robots[idx])):{name:'',signature:'',workDir:'',agentProvider:'EMBEDDED_PI_ACP',avatar:'',enabled:true,abilityAutoRefresh:true,onlySubAgent:false,onlyTeamMember:false,teamSharedWithChatterIds:[],scheduleEnabled:false,autoSleep:{enabled:false,idleMinutes:30},autoNewSession:{enabled:false,checkIntervalMinutes:360,idleMinutes:180},memory:{readEnabled:true,writeEnabled:true,scope:'workspace',executionMode:'model',extractIntervalTurns:5,indexMaxLines:200,maxEntriesPerProject:30,projectExpireDays:30,subClientTimeout:120,dreamEnabled:true,dreamMinHours:24,dreamMinSessions:5},subAgents:[],contacts:[]};
+robotMemoryModelAutoSelect=robotDialogMode==='add';robotMemoryModelAutoValue='';
+var r=idx>=0?JSON.parse(JSON.stringify(config.robots[idx])):{name:'',signature:'',workDir:'',agentProvider:'EMBEDDED_PI_ACP',avatar:'',enabled:true,abilityAutoRefresh:true,onlySubAgent:false,onlyTeamMember:false,teamSharedWithChatterIds:[],scheduleEnabled:true,observationEnabled:true,autoSleep:{enabled:true,idleMinutes:30},autoNewSession:{enabled:false,checkIntervalMinutes:360,idleMinutes:180},memory:{readEnabled:true,writeEnabled:true,scope:'workspace',executionMode:'model',extractIntervalTurns:5,indexMaxLines:200,maxEntriesPerProject:30,projectExpireDays:30,subClientTimeout:120,dreamEnabled:true,dreamMinHours:24,dreamMinSessions:5},subAgents:[],contacts:[]};
 if(r.agentProvider==='REMOTE_STARCORE_ACP'&&robotDialogMode==='copy'){showSnackbar('远程星核请使用新的 name 从 SDK 注册');return}
 if(robotDialogMode==='copy')r.name=nextRobotCopyName(r.name);
 if(!r.memory)r.memory={readEnabled:true,writeEnabled:true,scope:'workspace',executionMode:'model',extractIntervalTurns:5,indexMaxLines:200,maxEntriesPerProject:30,projectExpireDays:30,subClientTimeout:120,dreamEnabled:true,dreamMinHours:24,dreamMinSessions:5};if(r.memory.enabled!==undefined&&r.memory.readEnabled===undefined){r.memory.readEnabled=r.memory.enabled;r.memory.writeEnabled=r.memory.enabled;delete r.memory.enabled;}
@@ -50,7 +52,7 @@ var memoryTab='<section class="robot-tab-panel" data-robot-panel="memory" role="
 '<div class="field-group"><label>项目最大条目</label><input type="number" id="dMemProject" min="1" value="'+(m.maxEntriesPerProject||30)+'"></div>'+
 '<div class="field-group"><label>项目过期天数</label><input type="number" id="dMemExpire" min="1" value="'+(m.projectExpireDays||30)+'"></div>'+
 '<div class="field-group"><label>记忆整理方式</label><select id="dMemExecutionMode" onchange="toggleMemExecutionPanel()"><option value="model"'+(m.executionMode!=='robot'?' selected':'')+'>指定模型</option><option value="robot"'+(m.executionMode==='robot'?' selected':'')+'>指定智能体</option></select></div>'+
-'<div class="field-group" id="dMemModelPanel" style="'+(m.executionMode==='robot'?'display:none':'')+'"><label>记忆模型</label><div class="model-combobox" id="dMemModelCombobox"><input type="text" id="dMemModel" placeholder="留空则沿用主模型" value="'+esc(m.model||'')+'" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="dMemModelMenu" autocomplete="off" onfocus="openRobotModelMenu(\'dMemModel\')" onclick="openRobotModelMenu(\'dMemModel\')" oninput="filterRobotModelMenu(\'dMemModel\')" onkeydown="handleRobotModelKeydown(\'dMemModel\',event)"><button type="button" class="model-combobox-toggle" onclick="toggleRobotModelMenu(\'dMemModel\',event)" title="展开模型列表" aria-label="展开模型列表" tabindex="-1"><span class="material-icons" aria-hidden="true">arrow_drop_down</span></button><div class="model-options" id="dMemModelMenu" role="listbox"></div></div><div style="color:#757575;font-size:12px;margin-top:6px">与主模型共用实时目录和自定义历史</div></div>'+
+'<div class="field-group" id="dMemModelPanel" style="'+(m.executionMode==='robot'?'display:none':'')+'"><label>记忆模型</label><div class="model-combobox" id="dMemModelCombobox"><input type="text" id="dMemModel" placeholder="留空则沿用主模型" value="'+esc(m.model||'')+'" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="dMemModelMenu" autocomplete="off" onfocus="openRobotModelMenu(\'dMemModel\')" onclick="openRobotModelMenu(\'dMemModel\')" oninput="filterRobotModelMenu(\'dMemModel\')" onkeydown="handleRobotModelKeydown(\'dMemModel\',event)"><button type="button" class="model-combobox-toggle" onclick="toggleRobotModelMenu(\'dMemModel\',event)" title="展开模型列表" aria-label="展开模型列表" tabindex="-1"><span class="material-icons" aria-hidden="true">arrow_drop_down</span></button><div class="model-options" id="dMemModelMenu" role="listbox"></div></div><div style="color:#757575;font-size:12px;margin-top:6px">新建时尝试从当前引擎模型目录选择小模型；无匹配则留空并沿用主模型，可手动修改</div></div>'+
 '<div class="field-group" id="dMemRobotPanel" style="'+(m.executionMode==='robot'?'':'display:none')+'"><label>记忆智能体</label><select id="dMemRobot">'+memoryRobotOptions(m.robotName)+'</select><div style="color:#757575;font-size:12px;margin-top:6px">继承所选智能体的运行引擎、模型、认证、代理和工作目录</div></div>'+
 '<div class="field-group"><label>记忆任务超时（秒）</label><input type="number" id="dMemTimeout" min="10" value="'+(m.subClientTimeout||120)+'"></div>'+
 '<div class="field-group"><label>&nbsp;</label><div class="toggle-row" style="border:none;padding:0"><div><div class="toggle-label">定期整理记忆</div><div class="toggle-desc">由 Dream 任务归纳长期记忆</div></div><label class="switch"><input type="checkbox" id="dMemDream"'+(m.dreamEnabled!==false?' checked':'')+'><span class="slider"></span></label></div></div>'+
@@ -127,23 +129,40 @@ menu.innerHTML=matches.slice(0,100).map(function(item){var model=item.model,id=S
 function openRobotModelMenu(inputId){
 var input=document.getElementById(inputId),menu=robotModelMenu(inputId);if(!input||!menu)return;closeRobotModelMenus(inputId);renderRobotModelMenu(inputId);input.closest('.model-combobox').classList.add('open');input.setAttribute('aria-expanded','true');
 }
-function filterRobotModelMenu(inputId){openRobotModelMenu(inputId)}
+function filterRobotModelMenu(inputId){if(inputId==='dMemModel')robotMemoryModelAutoSelect=false;openRobotModelMenu(inputId)}
 function toggleRobotModelMenu(inputId,event){
 if(event){event.preventDefault();event.stopPropagation()}var input=document.getElementById(inputId);if(!input)return;var box=input.closest('.model-combobox'),wasOpen=box.classList.contains('open');if(wasOpen){closeRobotModelMenus();return}input.focus();openRobotModelMenu(inputId);
 }
 function selectRobotModelOption(inputId,option){
-var input=document.getElementById(inputId),index=parseInt(option.getAttribute('data-model-index'),10),model=robotModelCatalog[index];if(!input||!model)return;input.value=model.id||'';closeRobotModelMenus();input.focus();closeRobotModelMenus();
+var input=document.getElementById(inputId),index=parseInt(option.getAttribute('data-model-index'),10),model=robotModelCatalog[index];if(!input||!model)return;if(inputId==='dMemModel')robotMemoryModelAutoSelect=false;input.value=model.id||'';closeRobotModelMenus();input.focus();closeRobotModelMenus();
 }
 function handleRobotModelKeydown(inputId,event){
 if(event.key==='Escape'){closeRobotModelMenus();return}if(event.key!=='ArrowDown')return;event.preventDefault();openRobotModelMenu(inputId);var first=robotModelMenu(inputId).querySelector('.model-option');if(first)first.focus();
 }
 document.addEventListener('click',function(event){if(!event.target.closest('.model-combobox'))closeRobotModelMenus()});
+// Catalogs expose names, not model size/cost. Only explicit lightweight names qualify.
+function selectSmallMemoryModel(models){
+var candidates=(models||[]).filter(function(model){
+if(!model.id||!model.source||model.source==='history'||model.source==='configured')return false;
+var text=String(model.id)+' '+String(model.name||'');
+return /(?:^|[^a-z])(nano|mini|haiku|flash|lite|small|luna)(?=$|[^a-z])/i.test(text)&&!/(?:embed|rerank|image|vision|audio|tts|whisper)/i.test(text);
+});
+candidates.sort(function(a,b){return String(a.id).localeCompare(String(b.id), 'en', {numeric:true})});
+return candidates.length?candidates[0].id:'';
+}
+function applyDefaultMemoryModel(models){
+var input=document.getElementById('dMemModel');
+if(!input||!robotMemoryModelAutoSelect)return;
+if(input.value&&input.value!==robotMemoryModelAutoValue){robotMemoryModelAutoSelect=false;return}
+robotMemoryModelAutoValue=selectSmallMemoryModel(models);input.value=robotMemoryModelAutoValue;
+}
 async function loadRobotModels(force){
 var piSelected=isPiProvider(document.getElementById('dProvider').value),modelBox=document.getElementById('dModelCombobox');if(modelBox){modelBox.closest('.field-group').querySelector('label').textContent=piSelected?'模型 *':'模型 (可选)';document.getElementById('dModel').placeholder=piSelected?'输入模型 ID':'留空使用默认模型'}
 var main=document.getElementById('dModel'),memory=document.getElementById('dMemModel'),hint=document.getElementById('modelCatalogHint');if(!main||!memory)return;
+applyDefaultMemoryModel([]);
 var sequence=++robotModelRequestSequence,button=document.getElementById('modelRefreshBtn');robotModelCatalogLoading=true;if(button)button.disabled=true;if(hint)hint.textContent=force?'正在刷新模型列表...':'正在读取模型列表...';renderRobotModelMenu('dModel');renderRobotModelMenu('dMemModel');
 try{var response=await api('/api/provider-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(robotModelRequest('list',force))});var data=await response.json();if(!response.ok||data.success===false)throw new Error(data.message||'读取失败');if(sequence!==robotModelRequestSequence)return;
-robotModelCatalog=data.models||[];robotModelCatalogLoading=false;renderRobotModelMenu('dModel');renderRobotModelMenu('dMemModel');if(hint)hint.textContent=data.warning||(robotModelCatalog.length?'已加载 '+robotModelCatalog.length+' 个模型；也可直接输入自定义模型':'暂无可发现模型，可直接输入模型名称');
+robotModelCatalog=data.models||[];applyDefaultMemoryModel(data.warning?[]:robotModelCatalog);robotModelCatalogLoading=false;renderRobotModelMenu('dModel');renderRobotModelMenu('dMemModel');if(hint)hint.textContent=data.warning||(robotModelCatalog.length?'已加载 '+robotModelCatalog.length+' 个模型；也可直接输入自定义模型':'暂无可发现模型，可直接输入模型名称');
 }catch(e){if(sequence===robotModelRequestSequence){robotModelCatalogLoading=false;renderRobotModelMenu('dModel');renderRobotModelMenu('dMemModel');if(hint)hint.textContent='模型列表读取失败，可继续手动输入：'+e.message}}finally{if(sequence===robotModelRequestSequence&&button)button.disabled=false}
 }
 async function rememberRobotModels(robot){
