@@ -198,6 +198,19 @@ public class AgentResourceBrowserTest {
                 "# archived".getBytes(StandardCharsets.UTF_8));
     }
 
+    @Test public void remoteSkillsAndMemoryAreBrowsableFromPersistentCenterEvenOffline() throws Exception {
+        Path workspace = temporaryFolder.newFolder("remote-workspace").toPath(); AcpRobotParam robot = robot("remote-browser", workspace, "REMOTE_STARCORE_ACP");
+        com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiConfig pi = new com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiConfig(); pi.setStateId("browser-" + java.util.UUID.randomUUID()); robot.setEmbeddedPi(pi);
+        Path root = com.mola.cmd.proxy.app.acp.remote.RemoteResources.skillRoot(robot), file = root.resolve("demo/SKILL.md");
+        Files.createDirectories(file.getParent()); Files.write(file, "---\nname: demo\ndescription: central skill\n---\nRemote body".getBytes(StandardCharsets.UTF_8));
+        try {
+            AgentResourceBrowser browser = new AgentResourceBrowser(); JSONObject node = findFile(browser.tree(robot, "skill").getJSONArray("nodes"), "SKILL.md"); assertNotNull(node);
+            assertTrue(browser.content(robot, "skill", node.getString("id")).getBooleanValue("ok"));
+            MemoryConfig memory = new MemoryConfig(); memory.setBaseDir(temporaryFolder.newFolder("remote-memory").toString()); memory.setScope("robot"); robot.setMemory(memory);
+            Path memoryRoot = browser.roots(robot, "memory").get(0).path; Files.createDirectories(memoryRoot.resolve("memories")); Files.write(memoryRoot.resolve("memories/test.md"), "persistent memory".getBytes(StandardCharsets.UTF_8));
+            assertNotNull(findFile(browser.tree(robot, "memory").getJSONArray("nodes"), "test.md"));
+        } finally { Files.deleteIfExists(file); Files.deleteIfExists(file.getParent()); Files.deleteIfExists(root); Files.deleteIfExists(root.getParent()); }
+    }
     private AcpRobotParam robot(String name, Path workspace, String provider) {
         AcpRobotParam robot = new AcpRobotParam();
         robot.setName(name);

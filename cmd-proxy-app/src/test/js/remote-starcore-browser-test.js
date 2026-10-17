@@ -26,9 +26,13 @@ const server = http.createServer((req, res) => {
       await page.goto(`http://127.0.0.1:${server.address().port}`, { waitUntil: 'domcontentloaded' });
       await page.evaluate(() => {
         window.notices = []; showSnackbar = text => notices.push(text); window.saved = [];
-        config = { robots: [{ name: 'remote-one', workDir: '/remote/app', enabled: true, agentProvider: 'REMOTE_STARCORE_ACP', model: 'model-one', embeddedPi: { stateId: 'remote-state', baseUrl: 'https://model.example/v1', apiKey: '********', contextWindow: 64000, maxTokens: 4096 }, remoteStatus: { online: true, ready: true } }], chatterIds: [], channels: [], configUi: { enabled: true, port: 10528 }, externalTaskApis: [], agentGateways: [] };
+        config = { robots: [{ name: 'remote-one', workDir: '/remote/app', enabled: true, agentProvider: 'REMOTE_STARCORE_ACP', model: 'model-one', embeddedPi: { stateId: 'remote-state', baseUrl: 'https://model.example/v1', apiKey: '********', contextWindow: 64000, maxTokens: 4096 }, remoteStatus: { online: true, ready: true, resources: { supported: true, ready: true, conflicts: 1 } } }], chatterIds: [], channels: [], configUi: { enabled: true, port: 10528 }, externalTaskApis: [], agentGateways: [] };
         api = async (url, opts) => {
           if (url === '/api/config') { saved.push(JSON.parse(opts.body)); return { ok: true, json: async () => ({ ok: true }) }; }
+          if (url.startsWith('/api/remote-acp/resource-conflicts')) {
+            if (opts && opts.method === 'POST') { window.resolvedResource = JSON.parse(opts.body); return { ok: true, json: async () => ({ ok: true }) }; }
+            return { ok: true, json: async () => (url.includes('&id=') ? { ok: true, conflict: { id: 'a'.repeat(64), path: 'skills/demo/SKILL.md', head: 'head', starweave: 'central text', container: 'container text' } } : { ok: true, conflicts: [{ id: 'a'.repeat(64), path: 'skills/demo/SKILL.md' }] }) };
+          }
           if (url === '/api/remote-acp/status') return { ok: true, json: async () => ({ robots: [{ ...config.robots[0], enabled: false, remoteStatus: { online: false, ready: false } }] }) };
           return { ok: true, json: async () => ({ success: true, models: [{ id: 'model-one', name: 'model-one' }] }) };
         };
@@ -45,7 +49,15 @@ const server = http.createServer((req, res) => {
       await deleteButton.click({ force: true });
       assert.match(await page.evaluate(() => notices[notices.length - 1]), /失效后再删除/);
       assert.equal(await page.evaluate(() => config.robots.length), 1);
-      await page.evaluate(() => openRobotDialog(0));
+      assert.match(await page.locator('#robotList').innerText(), /资源冲突 1 项/);
+      await page.evaluate(async () => { showConfirm = async () => true; await openAgentResource(0, 'skill'); });
+      assert.match(await page.locator('#resourceDialogSubtitle').innerText(), /Starweave 持久副本/);
+      await page.locator('#resourceConflictButton').click();
+      await page.locator('#resourceViewer button', { hasText: 'skills/demo/SKILL.md' }).click();
+      await page.locator('#resourceViewer button', { hasText: '保留 Starweave 版本' }).click();
+      await page.waitForFunction(() => window.resolvedResource);
+      assert.equal(await page.evaluate(() => resolvedResource.choice), 'starweave');
+      await page.evaluate(() => { closeAgentResource(); openRobotDialog(0); });
       assert.equal(await page.locator('#dName').getAttribute('readonly'), '');
       assert.equal(await page.locator('#dWorkDir').getAttribute('readonly'), '');
       await page.locator('[data-robot-tab="agent"]').click();

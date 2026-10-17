@@ -634,6 +634,82 @@ public class MemoryFileStore {
                 .normalize().toString();
     }
 
+    /** Validate externally edited detail files before an optimistic resource commit. Caller holds the storage lock. */
+    public void validateSyncedDetail(String workspace, String fileName, byte[] content) throws IOException {
+        if (!fileName.endsWith(".md") || fileName.contains("/") || fileName.contains("\\") || fileName.startsWith(".")) throw new IOException("Only memory Markdown details are writable");
+        if (content == null) return;
+        parseSyncedDetail(workspace, fileName, new String(content, StandardCharsets.UTF_8));
+    }
+
+    private MemoryEntry parseSyncedDetail(String workspace, String fileName, String text) throws IOException {
+        java.util.Map<String, String> fields = new java.util.HashMap<>();
+        String body = text;
+        if (text.startsWith("---")) {
+            Matcher matcher = DETAIL_FRONTMATTER.matcher(text);
+            if (!matcher.find()) throw new IOException("Invalid memory frontmatter");
+            String[] lines = text.substring(0, matcher.end()).split("\r?\n");
+            for (String line : lines) { int colon = line.indexOf(':'); if (colon > 0) fields.put(line.substring(0, colon).trim(), line.substring(colon + 1).trim()); }
+            body = text.substring(matcher.end());
+        }
+        MemoryIndex index = loadIndex(workspace); MemoryEntry entry = null;
+        Path expected = getProjectDir(workspace).resolve(MEMORIES_DIR).resolve(fileName).toAbsolutePath().normalize();
+        for (MemoryEntry candidate : index.getMemories()) {
+            if (candidate.getFile() != null && Paths.get(candidate.getFile()).toAbsolutePath().normalize().equals(expected)) { entry = candidate; break; }
+        }
+        if (entry != null && fields.containsKey("id") && !entry.getId().equals(fields.get("id"))) throw new IOException("A synced edit cannot change the memory identity");
+        if (entry == null) {
+            entry = new MemoryEntry(); String id = fields.get("id");
+            if (id != null && !id.matches("[a-zA-Z0-9_-]{1,128}")) throw new IOException("Invalid memory identity");
+            entry.setId(id == null ? "memory_" + java.util.UUID.randomUUID().toString() : id);
+            entry.setCreatedAt(ZonedDateTime.now().format(ISO_FORMATTER)); entry.setType("project"); entry.setTitle(fileName.substring(0, fileName.length() - 3));
+        }
+        if (fields.containsKey("type")) {
+            String type = fields.get("type"); if (!java.util.Arrays.asList("project", "user", "feedback", "reference").contains(type)) throw new IOException("Invalid memory type"); entry.setType(type);
+        }
+        if (fields.containsKey("title") && !fields.get("title").isEmpty()) entry.setTitle(fields.get("title"));
+        if (fields.containsKey("tags")) entry.setTags(parseSyncedList(fields.get("tags")));
+        if (fields.containsKey("relatedSkills")) entry.setRelatedSkills(parseSyncedList(fields.get("relatedSkills")));
+        String summary = body.trim().replaceAll("\\s+", " "); entry.setSummary(summary.substring(0, Math.min(summary.length(), 400)));
+        entry.setDetail(body); entry.setFile(expected.toString()); entry.setUpdatedAt(ZonedDateTime.now().format(ISO_FORMATTER)); return entry;
+    }
+
+    private java.util.List<String> parseSyncedList(String text) throws IOException {
+        if (!text.startsWith("[") || !text.endsWith("]")) throw new IOException("Memory lists must use [item, item] syntax");
+        java.util.List<String> result = new java.util.ArrayList<>();
+        for (String part : text.substring(1, text.length() - 1).split(",")) { String value = part.trim(); if (!value.isEmpty()) result.add(value); }
+        return result;
+    }
+
+    public void validateSyncedDetails(String workspace, java.util.Map<String, byte[]> changes) throws IOException {
+        java.util.Set<String> ids = new java.util.HashSet<>(); MemoryIndex index = loadIndex(workspace);
+        for (MemoryEntry entry : index.getMemories()) {
+            String file = entry.getFile() == null ? "" : Paths.get(entry.getFile()).getFileName().toString();
+            if (!changes.containsKey(file)) ids.add(entry.getId());
+        }
+        for (java.util.Map.Entry<String, byte[]> change : changes.entrySet()) {
+            validateSyncedDetail(workspace, change.getKey(), change.getValue());
+            if (change.getValue() != null) {
+                MemoryEntry entry = parseSyncedDetail(workspace, change.getKey(), new String(change.getValue(), StandardCharsets.UTF_8));
+                if (!ids.add(entry.getId())) throw new IOException("Duplicate memory identity");
+            }
+        }
+    }
+
+    /** Apply detail changes to the generated index; the index itself is never accepted from a container. */
+    public void reconcileSyncedDetails(String workspace, java.util.Set<String> fileNames) throws IOException {
+        MemoryIndex index = loadIndex(workspace);
+        for (String fileName : fileNames) {
+            Path path = getProjectDir(workspace).resolve(MEMORIES_DIR).resolve(fileName).toAbsolutePath().normalize();
+            MemoryEntry entry = Files.exists(path) ? parseSyncedDetail(workspace, fileName, new String(Files.readAllBytes(path), StandardCharsets.UTF_8)) : null;
+            index.getMemories().removeIf(e -> e.getFile() != null && Paths.get(e.getFile()).toAbsolutePath().normalize().equals(path));
+            if (entry != null) index.getMemories().add(entry);
+        }
+        if (!fileNames.isEmpty()) {
+            index.setLastUpdated(ZonedDateTime.now().format(ISO_FORMATTER));
+            com.mola.starweave.sdk.sync.ResourceFiles.write(getIndexFilePath(workspace), INDEX_GSON.toJson(index).getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
     private Path getIndexFilePath(String workspacePath) {
         return getProjectDir(workspacePath).resolve(INDEX_FILE);
     }

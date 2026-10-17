@@ -33,6 +33,7 @@ public class RemoteAcpIntegrationTest {
     private String base, previousMcp, previousHome;
     private final AtomicBoolean callMcp = new AtomicBoolean(), callJvm = new AtomicBoolean();
     private final AtomicInteger jvmCalls = new AtomicInteger();
+    private final AtomicReference<JsonObject> lastModelRequest = new AtomicReference<>();
     private final AtomicInteger actualToolCalls = new AtomicInteger();
     private final AtomicInteger refreshes = new AtomicInteger(), mcpCalls = new AtomicInteger();
     @Before public void setup() throws Exception {
@@ -47,6 +48,7 @@ public class RemoteAcpIntegrationTest {
         http.createContext("/mcp", new com.mola.cmd.proxy.app.acp.action.CmdProxyMcpHttpHandler());
         http.createContext("/chat/completions", e -> {
             JsonObject request = JsonParser.parseReader(new InputStreamReader(e.getRequestBody(), StandardCharsets.UTF_8)).getAsJsonObject();
+            lastModelRequest.set(request.deepCopy());
             assertEquals("remote-model", request.get("model").getAsString());
             assertEquals("Bearer test-key", e.getRequestHeaders().getFirst("Authorization"));
             JsonObject message = new JsonObject(); message.addProperty("role", "assistant"); message.addProperty("content", "remote response");
@@ -101,6 +103,49 @@ public class RemoteAcpIntegrationTest {
         configure(); callJvm.set(true);
         try (Client client = new Client(robot(), true)) {
             client.start(); assertEquals("remote response", client.prompt()); assertEquals(1, jvmCalls.get());
+        }
+    }
+    @Test(timeout=35000) public void syncsWorkspaceSkillsAndMemoryIndexThenRestoresEmptyReplica() throws Exception {
+        configure(); AcpRobotParam owner = robot();
+        Path centralSkill = RemoteResources.skillRoot(owner).resolve("demo/SKILL.md");
+        Files.createDirectories(centralSkill.getParent()); Files.write(centralSkill, "---\nname: demo\ndescription: synced skill\n---\nUse this skill.".getBytes(StandardCharsets.UTF_8));
+        com.mola.cmd.proxy.app.acp.memory.MemoryFileStore store = new com.mola.cmd.proxy.app.acp.memory.MemoryFileStore(owner.getMemory().getBaseDir(), owner.getName());
+        com.mola.cmd.proxy.app.acp.memory.model.MemoryEntry entry = new com.mola.cmd.proxy.app.acp.memory.model.MemoryEntry();
+        entry.setId("memory-example"); entry.setType("project"); entry.setTitle("example"); entry.setSummary("saved memory"); entry.setDetail("saved body"); entry.setCreatedAt("2026-10-17"); entry.setUpdatedAt("2026-10-17");
+        store.writeDetail(owner.getWorkDir(), entry);
+        com.mola.cmd.proxy.app.acp.memory.model.MemoryIndex index = store.loadIndex(owner.getWorkDir()); index.getMemories().add(entry); store.saveIndex(owner.getWorkDir(), index);
+        Path localMemory = data.resolve("managed/memory").resolve(Paths.get(entry.getFile()).getFileName());
+        try (Client client = new Client(robot(), false)) {
+            client.start();
+            assertTrue(Files.exists(workspace.resolve(".agents/skills/demo/SKILL.md"))); assertTrue(Files.exists(localMemory));
+            JsonObject localIndex = JsonParser.parseString(new String(Files.readAllBytes(data.resolve("managed/memory/index.json")), StandardCharsets.UTF_8)).getAsJsonObject();
+            String actualPath = localIndex.getAsJsonArray("memories").get(0).getAsJsonObject().get("file").getAsString(); assertEquals(localMemory.toString(), actualPath); assertTrue(Files.isRegularFile(Paths.get(actualPath)));
+            String prompt = new com.mola.cmd.proxy.app.acp.memory.MemoryLoader(store, owner.getMemory()).buildMemoryPrompt(owner.getWorkDir());
+            client.prompt(prompt); String sent = lastModelRequest.get().toString(); assertTrue(sent.contains(localMemory.toString())); assertFalse(sent.contains(entry.getFile()));
+        }
+        String edited = new String(Files.readAllBytes(localMemory), StandardCharsets.UTF_8).replace("saved body", "container edited body"); Files.write(localMemory, edited.getBytes(StandardCharsets.UTF_8));
+        Files.write(workspace.resolve(".agents/skills/demo/SKILL.md"), "---\nname: demo\ndescription: edited skill\n---\nEdited.".getBytes(StandardCharsets.UTF_8));
+        until(() -> { try { return new String(Files.readAllBytes(Paths.get(entry.getFile())), StandardCharsets.UTF_8).contains("container edited body"); } catch (IOException e) { return false; } });
+        until(() -> store.loadIndex(owner.getWorkDir()).getMemories().get(0).getSummary().contains("container edited body"));
+        until(() -> { try { return new String(Files.readAllBytes(centralSkill), StandardCharsets.UTF_8).contains("Edited."); } catch (IOException e) { return false; } });
+        sdk.close(); until(() -> !RemoteAcpManager.online("test-remote"));
+        Path replacement = temp.newFolder("replacement-sdk").toPath(); Files.copy(data.resolve("identity"), replacement.resolve("identity"));
+        Files.delete(workspace.resolve(".agents/skills/demo/SKILL.md"));
+        sdk = StarcoreClient.builder().starweaveUrl(base).name("test-remote").workspace(workspace).dataDirectory(replacement).start(); assertTrue(sdk.awaitReady(10, TimeUnit.SECONDS));
+        assertTrue(Files.exists(workspace.resolve(".agents/skills/demo/SKILL.md"))); assertTrue(Files.exists(replacement.resolve("managed/memory").resolve(Paths.get(entry.getFile()).getFileName())));
+    }
+    @Test(timeout=30000) public void staleMessagesAfterOneRuntimeClosesDoNotDisconnectOtherSessions() throws Exception {
+        configure();
+        try (Client survivor = new Client(robot(), false)) {
+            survivor.start();
+            for (int n = 0; n < 8; n++) {
+                AcpTransport temporary = manager.open(robot());
+                java.lang.reflect.Field idField = temporary.getClass().getDeclaredField("id"), connectionField = temporary.getClass().getDeclaredField("connection"); idField.setAccessible(true); connectionField.setAccessible(true);
+                String runtimeId = (String) idField.get(temporary); FramedConnection connection = (FramedConnection) connectionField.get(temporary);
+                temporary.close();
+                JsonObject late = Wire.frame("acp", runtimeId), message = new JsonObject(); message.addProperty("jsonrpc", "2.0"); message.addProperty("id", 1); message.addProperty("method", "initialize"); message.add("params", new JsonObject()); late.add("message", message); connection.send(late);
+                assertEquals("remote response", survivor.prompt()); assertTrue(RemoteAcpManager.online("test-remote"));
+            }
         }
     }
     @Test(timeout=25000) public void multiplexesIsolatedSessionsAndDisconnectFailsAllRuntimes() throws Exception {
@@ -207,6 +252,7 @@ public class RemoteAcpIntegrationTest {
             if (mcp) { JsonObject server = new JsonObject(); server.addProperty("name", "harness"); server.addProperty("type", "http"); server.addProperty("url", McpAuthManager.getInstance().getBaseUrl() + "/test-mcp"); servers.add(server); }
             params.add("mcpServers", servers); sessionId = sendRequest("session/new", params).getAsJsonObject("result").get("sessionId").getAsString();
         }
-        String prompt() throws IOException { return doSendPromptSync("hello", "test"); }
+        String prompt() throws IOException { return prompt("hello"); }
+        String prompt(String text) throws IOException { return doSendPromptSync(text, "test"); }
     }
 }

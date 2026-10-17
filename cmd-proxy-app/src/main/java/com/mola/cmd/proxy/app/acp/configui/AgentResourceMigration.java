@@ -32,7 +32,7 @@ final class AgentResourceMigration {
             long[] total = {0};
             for (String kind : KINDS) {
                 for (AgentResourceBrowser.ResourceRoot root : browser.roots(robot, kind)) {
-                    Path work = workspace(robot);
+                    Path work = resourceBase(robot, kind);
                     if (!kind.equals("memory") && !root.path.startsWith(work)) continue;
                     Path base = kind.equals("memory") ? memory : work;
                     if (!Files.exists(root.path, LinkOption.NOFOLLOW_LINKS)) continue;
@@ -65,7 +65,7 @@ final class AgentResourceMigration {
             manifest.put("provider", String.valueOf(robot.getAgentProvider()));
             JSONArray executable = new JSONArray();
             for (String name : files.keySet()) {
-                if (name.startsWith("skill/") && Files.isExecutable(workspace(robot).resolve(
+                if (name.startsWith("skill/") && Files.isExecutable(resourceBase(robot, "skill").resolve(
                         transformName(name.substring(6), substitutions(robot, false))))) executable.add(name);
             }
             manifest.put("executable", executable);
@@ -112,7 +112,7 @@ final class AgentResourceMigration {
             if (!selected.contains(kind)) continue;
             String relative = transformName(name.substring(slash + 1), substitutions);
             validateRelative(relative);
-            Path base = kind.equals("memory") ? memoryRoot(robot) : workspace(robot);
+            Path base = kind.equals("memory") ? memoryRoot(robot) : resourceBase(robot, kind);
             Path target = base.resolve(relative).normalize();
             if (!target.startsWith(base) || !allowed(robot, kind, target, relative)) {
                 throw new IllegalArgumentException("文件不属于目标 Agent 可识别的资源: " + name);
@@ -200,7 +200,7 @@ final class AgentResourceMigration {
     private boolean allowed(AcpRobotParam robot, String kind, Path target, String relative) {
         if (kind.equals("memory")) return activeMemory(relative);
         for (AgentResourceBrowser.ResourceRoot root : browser.roots(robot, kind)) {
-            if (!root.path.startsWith(workspace(robot))) continue;
+            if (!root.path.startsWith(resourceBase(robot, kind))) continue;
             if (root.file ? target.equals(root.path) : target.startsWith(root.path) && !target.equals(root.path)) return true;
         }
         return false;
@@ -280,6 +280,10 @@ final class AgentResourceMigration {
         return bytes;
     }
 
+    private Path resourceBase(AcpRobotParam robot, String kind) {
+        if (kind.equals("skill") && "REMOTE_STARCORE_ACP".equals(robot.getAgentProvider())) return com.mola.cmd.proxy.app.acp.remote.RemoteResources.skillRoot(robot);
+        return workspace(robot);
+    }
     private Path memoryRoot(AcpRobotParam robot) { return browser.roots(robot, "memory").get(0).path; }
     private static Path workspace(AcpRobotParam robot) { return Paths.get(robot.getWorkDir()).toAbsolutePath().normalize(); }
     private static boolean activeMemory(String relative) {

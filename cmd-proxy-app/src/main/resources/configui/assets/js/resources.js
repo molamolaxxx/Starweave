@@ -48,11 +48,12 @@ var robot=config.robots[index];if(!robot)return;
 if(resourceDream.timer)clearTimeout(resourceDream.timer);
 resourceDream={robot:kind==='memory'?(robot.name||''): '',available:false,running:false,pending:kind==='memory',pendingText:'正在检查…',timer:null};
 resourceState={robotIndex:index,kind:kind,selectedId:'',nodes:[]};
+var conflictButton=document.getElementById('resourceConflictButton');if(conflictButton)conflictButton.style.display=robot.agentProvider==='REMOTE_STARCORE_ACP'&&(kind==='skill'||kind==='memory')?'inline-flex':'none';
 var meta=resourceMeta(kind);
 document.getElementById('resourceDialogTitle').textContent=meta.title;
 document.getElementById('resourceDialogIcon').textContent=meta.icon;
 document.getElementById('resourceTreeTitle').textContent=meta.tree;
-document.getElementById('resourceDialogSubtitle').textContent=(robot.name||'未命名')+' · '+providerDisplayName(robot.agentProvider||'KIRO_CLI');
+document.getElementById('resourceDialogSubtitle').textContent=(robot.name||'未命名')+' · '+providerDisplayName(robot.agentProvider||'KIRO_CLI')+(robot.agentProvider==='REMOTE_STARCORE_ACP'&&(kind==='skill'||kind==='memory')?' · 查看 Starweave 持久副本；在线容器自动双向同步':'');
 document.getElementById('resourceFileName').textContent='请选择文件';
 document.getElementById('resourceFileMeta').textContent='';
 updateAgentMemoryDreamButton();
@@ -217,3 +218,29 @@ function memoryTypeName(type){var names={user:'用户画像',feedback:'反馈偏
 function formatMemoryTime(value){if(!value)return '时间未知';return String(value).replace('T',' ').replace(/\.\d+(?=[+-]|Z|$)/,'').replace(/([+-]\d\d:\d\d|Z)$/,'').slice(0,16)}
 function findResourceFileNode(nodes,fileName){for(var i=0;i<(nodes||[]).length;i++){var node=nodes[i];if(node.type==='file'&&node.fileName===fileName)return node;var found=findResourceFileNode(node.children||[],fileName);if(found)return found}return null}
 function openMemoryDetail(button){var fileName=button.getAttribute('data-memory-file'),node=findResourceFileNode(resourceState.nodes,fileName);if(!node){showSnackbar('未找到对应的记忆明细文件');return}loadAgentResourceContent(node.id,node.name)}
+
+var remoteResourceConflictSelection=null;
+async function showRemoteResourceConflicts(){
+var robot=config.robots[resourceState.robotIndex];if(!robot||robot.agentProvider!=='REMOTE_STARCORE_ACP')return;
+var name=robot.name;remoteResourceConflictSelection=null;
+try{var response=await api('/api/remote-acp/resource-conflicts?robot='+encodeURIComponent(name)),data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'读取失败');
+if(!config.robots[resourceState.robotIndex]||config.robots[resourceState.robotIndex].name!==name)return;
+window.remoteResourceConflictList=data.conflicts||[];
+document.getElementById('resourceViewer').innerHTML='<div class="resource-content"><h3>资源同步冲突</h3><p>双方副本均已保留。选择一个文件查看并决定使用哪个版本。</p>'+remoteResourceConflictList.map(function(item,i){return '<p><button class="btn btn-secondary btn-sm" onclick="viewRemoteResourceConflict('+i+')">'+esc(item.path)+'</button></p>'}).join('')+(!remoteResourceConflictList.length?'<p>当前没有待处理冲突。</p>':'')+'</div>';
+}catch(e){showSnackbar('读取同步冲突失败：'+e.message)}
+}
+async function viewRemoteResourceConflict(index){
+var robot=config.robots[resourceState.robotIndex],item=(window.remoteResourceConflictList||[])[index];if(!robot||!item)return;
+var name=robot.name;
+try{var response=await api('/api/remote-acp/resource-conflicts?robot='+encodeURIComponent(name)+'&id='+encodeURIComponent(item.id)),data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'读取失败');
+if(!config.robots[resourceState.robotIndex]||config.robots[resourceState.robotIndex].name!==name)return;
+remoteResourceConflictSelection={robot:name,detail:data.conflict};var detail=data.conflict;
+document.getElementById('resourceViewer').innerHTML='<div class="resource-content"><h3>'+esc(detail.path)+'</h3><button class="btn btn-secondary btn-sm" onclick="resolveRemoteResourceConflict(&quot;starweave&quot;)">保留 Starweave 版本</button> <button class="btn btn-secondary btn-sm" onclick="resolveRemoteResourceConflict(&quot;container&quot;)">采用容器版本</button><h4>Starweave '+(detail.starweaveDeleted?'（已删除）':'')+'</h4><pre>'+esc(detail.starweave)+'</pre><h4>容器 '+(detail.containerDeleted?'（已删除）':'')+'</h4><pre>'+esc(detail.container)+'</pre></div>';
+}catch(e){showSnackbar('读取冲突内容失败：'+e.message)}
+}
+async function resolveRemoteResourceConflict(choice){
+var selection=remoteResourceConflictSelection;if(!selection)return;
+if(!await showConfirm('将采用'+(choice==='container'?'容器':'Starweave')+'版本，并在后续同步中应用到容器。原冲突副本仍保留。',{title:'处理同步冲突？',confirmText:'确认采用'}))return;
+try{var response=await api('/api/remote-acp/resource-conflicts?robot='+encodeURIComponent(selection.robot),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:selection.detail.id,head:selection.detail.head,choice:choice})}),data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'处理失败');showSnackbar('已保存冲突处理结果，在线容器将在后续同步中应用');await showRemoteResourceConflicts();
+}catch(e){showSnackbar('处理同步冲突失败：'+e.message)}
+}

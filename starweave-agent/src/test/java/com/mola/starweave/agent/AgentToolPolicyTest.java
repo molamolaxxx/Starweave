@@ -20,6 +20,15 @@ public class AgentToolPolicyTest {
         AgentToolPolicy policy = AgentToolPolicy.workspace(workspace, workspace.resolve("skills"), true, false);
         reject(() -> policy.check(workspace.resolve("link/secret.txt"), false)); reject(() -> policy.check(workspace.resolve("link/new.txt"), true));
     }
+    @Test public void remoteMemoryAllowsHostApprovedDetailsButProtectsGeneratedIndex() throws Exception {
+        Path workspace = temp.newFolder("work").toPath(), managed = temp.newFolder("managed").toPath();
+        AgentToolPolicy policy = AgentToolPolicy.workspace(workspace, workspace.resolve("skills"), true, false).withManagedResources(managed);
+        policy.check(workspace.resolve(".agents/skills/demo/SKILL.md"), true);
+        policy.check(managed.resolve("memory/example.md"), true); policy.check(managed.resolve("memory/index.json"), false);
+        reject(() -> policy.check(managed.resolve("memory/index.json"), true)); reject(() -> policy.check(managed.resolve("../identity"), false));
+        AgentToolPolicy readOnly = AgentToolPolicy.workspace(workspace, workspace.resolve("skills"), false, false).withManagedResources(managed);
+        reject(() -> readOnly.check(managed.resolve("memory/example.md"), true));
+    }
     private static void reject(Action action) throws Exception { try { action.run(); fail("operation should have been rejected"); } catch (IOException expected) { } }
     interface Action { void run() throws Exception; }
 }

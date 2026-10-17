@@ -275,6 +275,7 @@ public class ConfigUiServer {
         server.createContext("/api/remote-acp/discover", remoteAcpManager::handleDiscovery);
         server.createContext("/api/remote-acp/mcp/", remoteAcpManager::handleMcp);
         server.createContext("/api/remote-acp/status", proxied(remoteAcpManager::handleStatus));
+        server.createContext("/api/remote-acp/resource-conflicts", proxied(remoteAcpManager::handleResourceConflicts));
         server.createContext("/api/config", proxied(this::handleConfig));
         server.createContext("/api/channels/status", proxied(this::handleChannelStatus));
         server.createContext("/api/channels/inbound", proxied(this::handleChannelInbound));

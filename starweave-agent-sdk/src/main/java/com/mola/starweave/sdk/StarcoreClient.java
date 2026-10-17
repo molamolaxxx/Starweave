@@ -2,6 +2,7 @@ package com.mola.starweave.sdk;
 
 import com.google.gson.*;
 import com.mola.starweave.agent.*;
+import com.mola.starweave.sdk.sync.*;
 import java.io.*;
 import java.net.*;
 import java.nio.channels.*;
@@ -25,6 +26,13 @@ public final class StarcoreClient implements AutoCloseable {
     private volatile String lastError = "";
     private volatile long lastReceived;
     private final String identity;
+    private final ResourceReplica resources;
+    private final ScheduledExecutorService resourceWorker = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "starcore-resource-sync"); t.setDaemon(true); return t; });
+    private volatile boolean resourceSyncSupported, resourcesReady, modelReady;
+    private volatile String pendingResourceRequest = "";
+    private final java.util.concurrent.atomic.AtomicReference<String> requestedBarrier = new java.util.concurrent.atomic.AtomicReference<>("");
+    private volatile long resourceRequestAt;
+
     private final FileChannel identityChannel;
     private final FileLock identityLock;
     private StarcoreClient(Builder b) throws IOException {
@@ -41,8 +49,10 @@ public final class StarcoreClient implements AutoCloseable {
             if (!Files.exists(file)) { Files.write(file, UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE_NEW); }
             identity = new String(Files.readAllBytes(file), StandardCharsets.UTF_8).trim();
             if (identity.length() < 16) throw new IOException("Invalid StarCore identity file");
+            resources = new ResourceReplica(b.dataDirectory, b.workspace);
         } catch (IOException e) { identityLock.release(); identityChannel.close(); throw e; }
         timer.scheduleAtFixedRate(this::heartbeat, 1, 10, TimeUnit.SECONDS);
+        resourceWorker.scheduleWithFixedDelay(this::syncResources, 1, 3, TimeUnit.SECONDS);
         FramedConnection.daemon("connector", this::connectLoop);
     }
     public static StarcoreClient start(String starweaveUrl, String name) throws IOException { return builder().starweaveUrl(starweaveUrl).name(name).start(); }
@@ -60,6 +70,7 @@ public final class StarcoreClient implements AutoCloseable {
         while (!closed.get()) {
             Socket pendingSocket = null;
             setState(State.CONNECTING);
+            resourceSyncSupported = false; resourcesReady = false; modelReady = false; pendingResourceRequest = ""; requestedBarrier.set("");
             try {
                 JsonObject info = discover(); if (closed.get()) return;
                 String host = Wire.str(info, "host"); if (host.isEmpty()) host = options.url.getHost();
@@ -74,6 +85,7 @@ public final class StarcoreClient implements AutoCloseable {
                 FramedConnection connection = new FramedConnection(socket); link = connection; lastReceived = System.nanoTime();
                 JsonObject hello = Wire.frame("register", null); hello.addProperty("protocolVersion", Wire.VERSION);
                 hello.addProperty("name", options.name); hello.addProperty("identity", identity); hello.addProperty("workspace", options.workspace.toString());
+                hello.addProperty("resourceSyncVersion", 1); hello.addProperty("managedRoot", resources.root().toString());
                 hello.addProperty("sdkVersion", "1.0.0"); hello.addProperty("platform", System.getProperty("os.name"));
                 hello.addProperty("starweaveUrl", options.url.toString());
                 if (!options.accessToken.isEmpty()) hello.addProperty("accessToken", options.accessToken);
@@ -99,11 +111,35 @@ public final class StarcoreClient implements AutoCloseable {
     private void receive(FramedConnection connection, JsonObject f) throws IOException {
         String type = Wire.str(f, "type"), id = Wire.str(f, "runtimeId");
         if (type.equals("error")) throw new IOException("StarCore registration rejected");
-        if (type.equals("registered")) { lastError = ""; setState(State.CONNECTED); return; }
+        if (type.equals("registered")) {
+            lastError = ""; setState(State.CONNECTED);
+            resourceSyncSupported = f.has("resourceSyncVersion") && f.get("resourceSyncVersion").getAsInt() == 1;
+            if (resourceSyncSupported) { resourceWorker.execute(() -> {
+                try { if (connection != link) return; resources.bind(Wire.str(f, "resourceSetId")); syncResources(); }
+                catch (IOException e) { lastError = "Resource set does not match local data directory"; connection.close(); }
+            }); }
+            return;
+        }
+        if (type.equals("resources_poll")) { requestedBarrier.set(Wire.str(f, "barrier")); resourceWorker.execute(this::syncResources); return; }
+        if (type.equals("resources_response")) {
+            resourceWorker.execute(() -> {
+                if (link != connection || !Wire.str(f, "requestId").equals(pendingResourceRequest)) return;
+                JsonObject ack = Wire.frame("resources_ack", null); ack.addProperty("barrier", Wire.str(f, "barrier"));
+                try {
+                    if (!resources.apply(f)) return;
+                    resourcesReady = true; lastError = ""; ack.addProperty("ready", true); ack.addProperty("conflicts", resources.conflictCount()); ack.addProperty("version", Wire.str(f, "version"));
+                    ack.addProperty("managedRoot", resources.root().toString());
+                    if (modelReady) setState(State.READY);
+                } catch (IOException | RuntimeException e) { resourcesReady = false; lastError = "Resource synchronization failed: " + e.getClass().getSimpleName(); ack.addProperty("ready", false); ack.addProperty("error", lastError); }
+                finally { pendingResourceRequest = ""; }
+                try { connection.send(ack); } catch (IOException ignored) { }
+                if (!requestedBarrier.get().isEmpty()) syncResources();
+            }); return;
+        }
         if (type.equals("config")) {
             JsonObject ack = Wire.frame("config_ack", null); ack.add("version", f.get("version"));
-            try { config(f.getAsJsonObject("config")); ack.addProperty("ready", true); setState(State.READY); }
-            catch (RuntimeException e) { ack.addProperty("ready", false); ack.addProperty("error", "请配置有效的模型、API Key 和上下文预算"); setState(State.CONNECTED); }
+            try { config(f.getAsJsonObject("config")); ack.addProperty("ready", true); modelReady = true; setState(!resourceSyncSupported || resourcesReady ? State.READY : State.CONNECTED); }
+            catch (RuntimeException e) { modelReady = false; ack.addProperty("ready", false); ack.addProperty("error", "请配置有效的模型、API Key 和上下文预算"); setState(State.CONNECTED); }
             connection.send(ack); return;
         }
         if (type.equals("upload")) {
@@ -130,14 +166,24 @@ public final class StarcoreClient implements AutoCloseable {
             Runtime r = runtimes.get(id); if (r == null) return;
             // Embedded input dispatch is nonblocking; model/MCP work runs on its own worker.
             byte[] bytes = (f.get("message").toString() + "\n").getBytes(StandardCharsets.UTF_8);
-            r.process.getOutputStream().write(bytes); r.process.getOutputStream().flush(); return;
+            try { r.process.getOutputStream().write(bytes); r.process.getOutputStream().flush(); }
+            catch (IOException | RuntimeException e) {
+                runtimes.remove(id, r); r.process.destroy();
+                JsonObject failure = Wire.frame("runtime_error", id); failure.addProperty("error", "远程执行实例已关闭或不再接收消息"); connection.send(failure);
+            }
+            return;
         }
-        if (type.equals("close")) { lifecycle.execute(() -> { Runtime r = runtimes.remove(id); if (r != null) r.process.destroy(); }); }
+        if (type.equals("close")) {
+            // Detach before scheduling cleanup: a queued ACP message for this id must never kill the shared link.
+            Runtime r = runtimes.remove(id);
+            if (r != null) try { lifecycle.execute(r.process::destroy); } catch (RejectedExecutionException e) { r.process.destroy(); }
+        }
     }
     private AgentConfig config(JsonObject c) {
         Map<String, String> env = new HashMap<>(System.getenv());
         if (c.has("environment")) for (Map.Entry<String, JsonElement> e : c.getAsJsonObject("environment").entrySet()) env.put(e.getKey(), e.getValue().getAsString());
-        AgentToolPolicy policy = AgentToolPolicy.workspace(options.workspace, options.dataDirectory.resolve("skills"), options.allowWrite, options.allowShell);
+        AgentToolPolicy policy = AgentToolPolicy.workspace(options.workspace, options.dataDirectory.resolve("skills"), options.allowWrite, options.allowShell)
+                .withManagedResources(resourceSyncSupported ? resources.root() : null);
         if (options.allowJvm) policy = policy.withJvmExecution(options.jvmBindings);
         return new AgentConfig(Wire.str(c, "baseUrl"), Wire.str(c, "apiKey"), Wire.str(c, "model"), options.dataDirectory,
                 c.get("contextWindow").getAsInt(), c.get("maxTokens").getAsInt(), env, policy);
@@ -163,6 +209,22 @@ public final class StarcoreClient implements AutoCloseable {
             try { connection.send(reply); } catch (IOException ignored) { }
         }
     }
+    private void syncResources() {
+        FramedConnection connection = link;
+        if (!resourceSyncSupported || connection == null || !connection.isAlive() || closed.get()) return;
+        if (!pendingResourceRequest.isEmpty()) {
+            if (System.nanoTime() - resourceRequestAt < TimeUnit.SECONDS.toNanos(20)) return;
+            resources.resetRequest(); pendingResourceRequest = "";
+        }
+        try {
+            JsonObject request = resources.request(); request.addProperty("barrier", requestedBarrier.getAndSet(""));
+            pendingResourceRequest = Wire.str(request, "requestId"); resourceRequestAt = System.nanoTime(); connection.send(request);
+        } catch (IOException | RuntimeException e) {
+            pendingResourceRequest = ""; resourcesReady = false; lastError = "Resource synchronization failed: " + e.getClass().getSimpleName();
+            JsonObject ack = Wire.frame("resources_ack", null); ack.addProperty("ready", false); ack.addProperty("error", lastError); ack.addProperty("barrier", requestedBarrier.getAndSet(""));
+            try { connection.send(ack); } catch (IOException ignored) { }
+        }
+    }
     private void heartbeat() {
         FramedConnection connection = link; if (connection == null) return;
         if (System.nanoTime() - lastReceived > TimeUnit.SECONDS.toNanos(35)) { connection.close(); return; }
@@ -171,7 +233,7 @@ public final class StarcoreClient implements AutoCloseable {
     private void clearRuntimes() { for (Runtime r : runtimes.values()) r.process.destroy(); runtimes.clear(); }
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        FramedConnection c = link; if (c != null) c.close(); clearRuntimes(); timer.shutdownNow(); lifecycle.shutdownNow();
+        FramedConnection c = link; if (c != null) c.close(); clearRuntimes(); timer.shutdownNow(); lifecycle.shutdownNow(); resourceWorker.shutdownNow();
         try { identityLock.release(); identityChannel.close(); } catch (IOException ignored) { }
         setState(State.CLOSED);
     }
