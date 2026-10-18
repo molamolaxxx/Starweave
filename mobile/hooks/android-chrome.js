@@ -15,6 +15,10 @@ module.exports = function (context) {
     if (source.split(from).length !== 2) throw new Error('InAppBrowser source changed: Android window customization does not match.');
     source = source.replace(from, to);
   }
+  // _system opens share this plugin instance with the live IAB. Preserve its event owner.
+  replaceOnce('            this.callbackContext = callbackContext;', '            // Assigned below only for a managed WebView.');
+  replaceOnce('            final String target = t;', `            final String target = t;
+            if (!SYSTEM.equals(target)) this.callbackContext = callbackContext;`);
   replaceOnce('    private InAppBrowserDialog dialog;', `    private InAppBrowserDialog dialog;
 
     private void applyStarweaveSystemBars(final boolean dark) {
