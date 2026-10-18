@@ -19,9 +19,10 @@ function harness(){
 const live=id=>({id,source:'api'});
 const reply=models=>({ok:true,json:async()=>({models})});
 
-test('new form enables schedule, observations, sleep and memory',()=>{
+test('new form defaults to Starcore and enables schedule, observations, sleep and memory',()=>{
   const {context,elements}=harness();context.loadRobotModels=()=>{};
   context.openRobotDialog(-1);
+  assert.match(elements.dlgBody.innerHTML,/<option value="JAVA_PI_ACP" selected>内嵌引擎 · 星核<\/option>/);
   for(const id of ['dSchedule','dObservation','dAutoSleep','dMemRead','dMemWrite']){
     assert.match(elements.dlgBody.innerHTML,new RegExp('id="'+id+'" checked'));
   }

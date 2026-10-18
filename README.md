@@ -31,8 +31,9 @@ Web 控制台里被观测和编排。
 **Starweave 要做的，就是在这些引擎之上，织一张网。**
 
 “Starweave” = Star（每一颗独立的智能体之星）+ Weave（把它们编织在一起）。
-它不替代任何编码助手，而是在它们外面加了一层**运行时**：托管进程、隔离工作空间、
-打通互相通信、补上长期记忆与定时能力、接上外部渠道，最后用一个统一控制台交付给你。
+它既能托管你熟悉的编码助手，也能用内嵌的 **星核（StarCore）** 直接连接模型。
+统一的运行时负责会话与工作空间、智能体通信、长期记忆、定时执行和外部渠道，
+再把这一切装进一个控制台。
 
 > 一句话理解：**ChatGPT 们各自为战，Starweave 让它们成为一支队伍。**
 
@@ -42,11 +43,13 @@ Web 控制台里被观测和编排。
 
 | | 能力 | 一句话 |
 |---|---|---|
-| 🛰️ | **多引擎编队** | 默认内嵌 Pi，也可混编 Kiro CLI / OpenCode / Claude / Codex / DeepSeek Harness |
+| 🛰️ | **多引擎编队** | 默认使用 JVM 内嵌星核，也可混编 Pi / Kiro CLI / OpenCode / Claude / Codex / DeepSeek Harness |
+| ☕ | **业务 JVM 里的星核** | 通过 Java SDK 把星核嵌入业务应用，由 Starweave 统一配置、对话和组队 |
 | 💬 | **TalkTo** | 智能体之间异步互发消息，发完就走、可双向回复，复用彼此的完整上下文 |
 | 👥 | **Fast Team** | 多个智能体临时组队，普通模式全员互通，队长模式星形指挥 |
 | 🧩 | **子智能体并行** | 一键把独立任务扇出给多位专家并行执行，再聚合回主智能体 |
 | 🧠 | **长期记忆 + Auto Dream** | 跨会话记住你的偏好与项目决策，并在后台自动整理、去重、纠错 |
+| 🪪 | **定制能力卡片** | 用小模型提取工作区技能、领域记忆与专属工具，让调度知道该把什么任务交给谁 |
 | 🔎 | **会话历史检索** | 智能体可搜索普通与团队会话，一次读取最多 10 个会话，找回以前的讨论 |
 | 🔭 | **观测台** | 定期运行脚本，状态变化才通知智能体，让它主动响应世界的变化 |
 | ⏰ | **定时任务** | 用自然语言让智能体「每天八点问好」，周期 / 一次性都支持 |
@@ -54,6 +57,7 @@ Web 控制台里被观测和编排。
 | 📡 | **外部信道** | 企业微信双向接入，消息先归档再投递，可检索、可审计 |
 | 🌐 | **智能体网关** | 把真实会话以结构化事件流 + HTTP/WebSocket 暴露给外部系统 |
 | 🌍 | **注册中心** | 通过内嵌 TLS 反向隧道连接远程环境，在一个控制台管理多台机器 |
+| 💤 | **自动睡眠** | 新建智能体默认空闲 30 分钟后释放运行资源，收到请求时自动唤醒 |
 | 🖥️ | **Starweave 控制台** | 暗夜主题、响应式、移动端可用的可视化配置与观测中心 |
 
 ---
@@ -66,6 +70,7 @@ flowchart TB
         WC["💬 企业微信"]
         EXT["🔌 外部系统 / 开放 API"]
         MC["📱 MolaChat"]
+        APP["☕ 业务应用 + 星核 SDK"]
     end
 
     subgraph SW["✦ Starweave Runtime"]
@@ -93,6 +98,7 @@ flowchart TB
     EXT --> GW
     EXT --> API
     MC --> Core
+    APP <-->|远程 ACP| Core
     CH <--> Core
     GW <--> Core
     A1 <-->|TalkTo| A2
@@ -107,7 +113,7 @@ flowchart TB
     classDef world fill:#2b2f5e,stroke:#6c7bd4,color:#fff
     classDef core fill:#4c3a8f,stroke:#a58bff,color:#fff
     classDef side fill:#1f2440,stroke:#5a6bb0,color:#dfe3ff
-    class WC,EXT,MC world
+    class WC,EXT,MC,APP world
     class A1,A2,A3,T core
     class GW,CH,API,MEM,SCH,OBS,REG,TASK,UI side
 ```
@@ -128,19 +134,37 @@ flowchart TB
 
 | 引擎 | 说明 |
 |---|---|
-| **内嵌引擎 · Pi** | 新建智能体默认引擎；Pi 与依赖随 JAR 分发，填写兼容 API 地址、模型与独立密钥即可使用 |
+| **内嵌引擎 · 星核** | 新建智能体默认引擎（`JAVA_PI_ACP`）；Java 8 引擎在当前 JVM 内运行，填写兼容 API 地址、模型与独立密钥即可使用 |
+| **内嵌引擎 · Pi** | 保留原 Node Pi 引擎，用于对照和回退；Pi 与依赖随 JAR 分发 |
 | **Kiro CLI** | 兼容 ACP 的本地 CLI 智能体 |
 | **OpenCode** | 按工作目录隔离，可搜索可手输的模型目录 |
 | **Claude Agent · ACP** | Claude Code 的 ACP 桥接 |
 | **Codex · ACP** | OpenAI Codex 的 ACP 桥接（按 Codex Home 跨工作目录共享模型目录） |
 | **DeepSeek Harness · ACP** | DeepSeek Harness，内置标准 / PTC / 极简 / 创造多套预设 |
 
-**从 Pi 开始，只需连接你的模型。** 默认 API 地址为 `https://api.deepseek.com`，也可填写其他
+**点亮一颗星核，只需连接你的模型。** 默认 API 地址为 `https://api.deepseek.com`，也可填写其他
 OpenAI 兼容服务；模型需支持流式 Chat Completions 和工具调用。每个智能体独立保存模型配置与密钥，
 高级设置可调整上下文窗口和最大输出预算，应按实际模型能力填写。
 
-内嵌 Pi 当前支持 **Linux x64 / Windows x64 / macOS x64 与 ARM64（Apple Silicon）**，运行时需要系统 **Node.js 22.19.0+**；
+星核运行在 Starweave 的 JVM 内，模型与 Agent 循环无需额外启动 Node 或独立 Agent 进程；Shell 工具和 stdio MCP 按需启动各自的子进程。
+详见 [星核引擎说明](docs/java-pi-engine.md)。
+
+原 Node Pi 当前支持 **Linux x64 / Windows x64 / macOS x64 与 ARM64（Apple Silicon）**，运行时需要系统 **Node.js 22.19.0+**；
 无需单独安装 Pi 或 npm 依赖。它同样接入团队、记忆、调度、观测和外部信道。
+
+**新建即配好协作节奏：**
+
+| 设置 | 新建智能体默认值 |
+|---|---|
+| 运行引擎 | 内嵌引擎 · 星核 |
+| 定时任务 / 观测能力 | 开启；任务与观测通道按需创建 |
+| 自动睡眠 | 开启，空闲阈值 30 分钟 |
+| 记忆读取 / 写入 / Auto Dream | 开启 |
+| 记忆模型 | 尝试从当前引擎目录选择小模型；无匹配则留空 |
+| 自动更新能力说明 | 开启 |
+| 自动开启新会话 | 关闭，可按需设置 |
+
+这些是新建表单的初始值，编辑或复制智能体会保留原有选择。模型 ID 和 API Key 仍需配置后才能运行。
 
 ---
 
@@ -179,7 +203,8 @@ TalkTo 是另一条通道——**异步、双向、非阻塞**：
 ## 👥 Fast Team：临时组队，并肩干活
 
 从控制台挑几个智能体、起个队名，`Starweave` 会为**每个成员创建一套独立的 ACP 会话**
-（独立进程、独立历史），让它们带着临时通讯录协同作战。会话与主会话完全隔离，互不污染。
+与独立历史，让它们带着临时通讯录协同作战。CLI 引擎使用独立进程，星核的执行实例共享宿主 JVM；
+成员会话与主会话分别管理。
 
 <div align="center">
 <img src="docs/images/teams-dark.png" alt="Starweave 团队" width="100%" />
@@ -240,6 +265,21 @@ Starweave 为每个智能体维护一套**可读、可编辑、可导出**的长
 **去重、合并、矛盾消除、过期清理、相对日期规范化**，让记忆随时间越睡越清晰。
 触发双门控：距上次整理 ≥ 24 小时 **且** 累积 ≥ 5 个会话。
 
+**记忆也可以用小模型打理。** 新建时按当前引擎模型目录中的 `mini`、`nano`、`haiku`、`flash`、
+`lite`、`small`、`luna` 等名称标记尝试选择，排除仅来自手动输入历史的候选；可自行修改或清空。
+这里按名称识别，不按价格排序，也不保证选到成本最低的模型。保存后，提取与 Auto Dream 使用已配置的记忆模型，
+留空则沿用主模型；运行期间不会重新发现或自动切换。选择“指定智能体”整理时，则继承目标智能体的引擎与模型配置。
+
+### 🪪 能力卡片：让调度看见你的专长
+
+智能体能写代码还不够，队伍还需要知道：**它熟悉哪个项目、掌握什么领域、有什么专属工具？**
+能力提取将工作区 Skills、智能体描述、领域记忆与专属 MCP 工具整理为精简能力卡片，供任务派发参考。
+
+- 提取材料只收集当前工作区的 Skills，排除用户级目录与工作区外的技能链接；提示词也明确要求忽略引擎自动加载的用户级、全局和通用插件技能。
+- 聚焦定制能力，证据不足时允许少写，避免所有智能体都列出同一套通用编码能力。
+- 每次实际提取前，优先复用记忆配置中的小模型，再检查主模型是否属于小模型，否则从当前引擎目录中选择。
+- 找不到小模型或执行失败时保留原能力卡片；不使用大模型兜底执行。策略升级后，旧卡片会在下一次自动更新检查时重新提取。
+
 ---
 
 ## 🔎 会话历史：把以前的讨论找回来
@@ -287,7 +327,7 @@ Starweave 为每个智能体维护一套**可读、可编辑、可导出**的长
 
 ![观测台：通道、执行者、巡检周期与运行状态](docs/images/observations-dark.png)
 
-- 在智能体的「能力与角色」开启观测能力，再到观测台创建通道，或让智能体通过 MCP 自行管理。
+- 新建智能体默认开启观测能力；在观测台创建通道，或让智能体通过 MCP 自行管理。已有智能体可在「能力与角色」中开启。
 - 脚本通过 `module.exports` 导出函数，支持异步执行，返回字符串；默认每 **30 秒**运行一次。
 - 首次成功建立基线，后续字符串变化才产生事件；执行失败保留上次成功基线。
 - 每个事件保存变化前后结果与**事件处理指令快照**，智能体忙碌时等待投递、睡眠时唤醒。
@@ -367,6 +407,38 @@ curl -X POST http://localhost:10528/api/external/v1/tasks \
 反向隧道直接运行在 JVM 中，使用 **Netty + TLS**，无需额外安装 frp，也无需在接入端开放入站端口。
 支持重启后自动恢复连接、远程环境访问密码，以及按成员实时传递混合队伍回复。
 中心转发管理流量，远程智能体仍在原机器运行；独立网关和 RPC 监听端口不会自动映射。
+
+### ☕ 把星核放进业务应用
+
+还可以让智能体直接住进你的 Java 服务：独立的 `starweave-agent-sdk` 支持 Java 8+，
+在业务 JVM 内运行星核，由应用主动连接 Starweave。中心负责模型配置、会话、记忆和团队，
+工具在业务机器执行，接入端无需开放入站端口。
+
+```java
+import com.mola.starweave.sdk.StarcoreClient;
+
+StarcoreClient client = StarcoreClient.start(
+    "http://your-starweave:10528", "order-service-prod-01");
+// 随业务应用生命周期关闭：client.close();
+```
+
+每个部署实例使用唯一名称，并保留自己的身份数据；相同名称不用于多副本负载均衡。
+SDK 接入与注册中心的远程环境隧道是两条独立链路，接入步骤、TCP 端口和依赖安装见
+[远程星核 SDK](docs/remote-starcore-sdk.md)。SDK 不提供业务侧 prompt API，对话由 Starweave 发起。
+
+| 工具权限 | 本地星核 | 业务应用 SDK 默认值 |
+|---|---|---|
+| `read` | 开启 | 开启，受宿主批准的目录范围约束 |
+| `write` / `edit` / `shell` | 开启 | 关闭，由宿主显式开放 |
+| `jvm_exec` | 关闭，当前未接入开启配置 | 关闭，宿主调用 `.allowJvmExecution(true)` 后开启 |
+
+`jvm_exec` 可在宿主 JVM 中执行 Groovy，访问 Java API 和宿主注入对象；完整 Java 执行权限由宿主决定，
+中心无法越过该权限上限。宿主可通过 `jvmBindings` 提供业务对象，SDK 无需依赖 Spring。
+
+**容器会更换，技能与记忆可以留下。** 新版中心与 SDK 支持远程资源双向同步：
+工作区 `.agents/skills/` 的技能和 SDK `managed/memory/` 下的记忆正文可与中心持久副本同步，
+并记录并发冲突；中心可在容器离线时查看已同步内容。新增技能在新建或刷新会话后重新发现，
+容器销毁前尚未同步的修改无法保证恢复。本地星核继续使用原有工作目录与记忆路径。
 
 ---
 
@@ -454,6 +526,7 @@ Starweave 以一个常驻 MCP Server 的名义（名称 `acp-harness-runtime`）
 
 - **JDK 8+**（推荐 JDK 17）
 - **Maven 3.6+**
+- 默认「内嵌引擎 · 星核」在 JVM 内运行，模型与 Agent 循环无需 Node.js
 - 使用「内嵌引擎 · Pi」时需安装 **Node.js 22.19.0+** 并加入 PATH；Pi 源码与依赖已包含在 JAR 中
 - 使用其他 npm 系引擎（OpenCode / Claude / Codex / DeepSeek Harness）时需 **Node.js 22+**
 
@@ -559,7 +632,7 @@ java -Dcmd.proxy.home=~/.starweave-dev \
 
 ### 4. 配置并使用
 
-1. 打开控制台 → **智能体 → 添加智能体**，填写名称、工作空间；默认 Pi 引擎需填写模型 ID、API 地址与独立 API Key，也可切换其他引擎。
+1. 打开控制台 → **智能体 → 添加智能体**，填写名称、工作空间；默认星核引擎需填写模型 ID、API 地址与独立 API Key，也可切换其他引擎。
 2. 在 **消息渠道** 里按需接入企业微信或开放任务接口。
 3. 到 **团队 / 任务 / 定时任务 / 观测台** 页面配置协作、执行与变化响应。
 4. 点击右上角 **保存并应用**，配置立即生效。
@@ -583,7 +656,7 @@ java -Dcmd.proxy.home=~/.starweave-dev \
 | 层 | 选型 |
 |---|---|
 | 语言 | Kotlin 1.9 + Java 8 |
-| 构建 | Maven 多模块（`cmd-proxy-client` / `cmd-proxy-app`） |
+| 构建 | Maven 多模块（`cmd-proxy-client` / `starweave-agent` / `starweave-agent-sdk` / `cmd-proxy-app`） |
 | 协议 | ACP（Agent Client Protocol）、MCP（Streamable HTTP） |
 | 通信 | WebSocket（企微信道 / 网关事件流）、HTTP + SSE、自研 RPC |
 | 存储 | SQLite（消息归档 / 任务中心）、JSON / JSONL、Markdown 记忆 |
@@ -596,6 +669,8 @@ java -Dcmd.proxy.home=~/.starweave-dev \
 ```
 cmd-proxy/
 ├── cmd-proxy-client/          # 轻量 RPC 模型与收发 API
+├── starweave-agent/           # 独立 Java 8 星核引擎：模型、工具、MCP、Skills、会话与压缩
+├── starweave-agent-sdk/       # 业务 JVM 接入、远程 ACP 与资源同步
 ├── cmd-proxy-app/
 │   └── src/main/
 │       ├── kotlin/.../app/
@@ -614,7 +689,7 @@ cmd-proxy/
 │       ├── java/.../app/acp/   # Java 侧实现，与 Kotlin 协同
 │       │   ├── observation/   #   观测脚本、变化事件与通知
 │       │   ├── registry/      #   注册中心与内嵌 TLS 反向隧道
-│       │   └── acpclient/     #   引擎 Provider（含内嵌 Pi）
+│       │   └── acpclient/     #   引擎 Provider（含星核与原 Node Pi）
 │       ├── resources/embedded/pi/ # Pi 适配层与捆绑运行资源
 │       └── resources/configui/ # 控制台前端（HTML / CSS / JS）
 └── docs/                       # 设计文档与插图
@@ -637,7 +712,8 @@ cmd-proxy/
   - [定时任务](docs/acp-schedule-task-design.md)
   - [会话查询 MCP](docs/acp-session-query-mcp.md) · [观测台](docs/observation-console.md)
 - **引擎与远程环境**
-  - [内嵌 Pi 引擎](docs/embedded-pi-engine.md)
+  - [星核 Java 引擎](docs/java-pi-engine.md) · [原 Node Pi 引擎](docs/embedded-pi-engine.md)
+  - [远程星核 SDK、JVM 工具与资源同步](docs/remote-starcore-sdk.md)
   - [注册中心](docs/registry-center.md) · [混合队伍协调](docs/registry-mixed-team-refactor.md) · [实时事件链路](docs/registry-team-realtime.md)
 - **外部世界**
   - [信道 + TalkTo MVP](docs/channel-acp-talkto-mvp-design.md) · [企微消息归档](docs/wecom-channel-message-archive-design.md)
