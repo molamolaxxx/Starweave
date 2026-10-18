@@ -130,6 +130,9 @@ test('ACP real Pi loop: stream, MCP, tools, budgets, errors, cancel, compact and
   assert.ok(f.updates.some(item => Array.isArray(item.update.content) && item.update.content.some(content => content.type === 'diff' && content.newText === 'saved content')));
   f.mode = 'tool:shell'; await prompt(f.connection, session.sessionId, 'run command');
   assert.ok(f.updates.some(item => item.update.kind === 'execute'));
+  const shellTitle = `shell: ${process.platform === 'win32' ? 'Write-Output hello' : 'printf hello'}`;
+  for (const status of ['in_progress', 'completed']) assert.ok(f.updates.some(({ update }) => update.title === shellTitle && update.status === status));
+  assert.ok(f.updates.some(({ update }) => update.title === 'write: test 中文.txt' && update.status === 'completed'));
   f.permission = false; f.mode = 'tool:write'; await prompt(f.connection, session.sessionId, 'deny write');
   assert.ok(f.updates.some(item => item.update.status === 'failed')); f.permission = true;
   f.mode = 'error'; await assert.rejects(prompt(f.connection, session.sessionId, 'bad endpoint'), error => !JSON.stringify(error).includes('isolated-test-key'));

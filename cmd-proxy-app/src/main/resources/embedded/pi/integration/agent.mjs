@@ -6,6 +6,14 @@ import { RequestError } from '@agentclientprotocol/sdk';
 import { connectMcp } from './mcp.mjs';
 import { commandTool } from './shell.mjs';
 
+function toolTitle(name, args) {
+  const value = ['shell', 'bash'].includes(name) ? args?.command
+    : ['read', 'write', 'edit'].includes(name) ? args?.path : '';
+  if (typeof value !== 'string' || !value.trim()) return name;
+  const detail = value.replace(/\s+/g, ' ').trim();
+  return `${name}: ${detail.length > 240 ? detail.slice(0, 237) + '...' : detail}`;
+}
+
 export function validateConfig(config) {
   const baseUrl = new URL(config.baseUrl);
   if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) throw new Error('API 地址必须是 HTTP/HTTPS Base URL');
@@ -99,7 +107,7 @@ export class EmbeddedPiAgent {
         for (const block of blocks || []) {
           if (block.type === 'text') await this.emit(entry, { sessionUpdate: message.role === 'user' ? 'user_message_chunk' : 'agent_message_chunk', content: block });
           else if (block.type === 'thinking') await this.emit(entry, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: block.thinking } });
-          else if (block.type === 'toolCall') await this.emit(entry, { sessionUpdate: 'tool_call', toolCallId: block.id, title: block.name, kind: this.kind(block.name), status: 'completed', rawInput: block.arguments });
+          else if (block.type === 'toolCall') await this.emit(entry, { sessionUpdate: 'tool_call', toolCallId: block.id, title: toolTitle(block.name, block.arguments), kind: this.kind(block.name), status: 'completed', rawInput: block.arguments });
         }
       } else if (message.role === 'toolResult') await this.emit(entry, { sessionUpdate: 'tool_call_update', toolCallId: message.toolCallId, status: message.isError ? 'failed' : 'completed', content: this.content(message.content), rawOutput: { content: message.content, details: message.details } });
     }
@@ -135,7 +143,7 @@ export class EmbeddedPiAgent {
     signal?.throwIfAborted();
     // The existing ACP client's permission policy remains authoritative.
     const pending = this.connection.requestPermission({ sessionId: entry.pi.sessionId,
-      toolCall: { toolCallId, title: name, kind: this.kind(name), status: 'pending', rawInput: args },
+      toolCall: { toolCallId, title: toolTitle(name, args), kind: this.kind(name), status: 'pending', rawInput: args },
       options: [{ optionId: 'allow-once', name: '允许本次', kind: 'allow_once' }, { optionId: 'allow-always', name: '允许', kind: 'allow_always' }, { optionId: 'reject-once', name: '拒绝', kind: 'reject_once' }] });
     const controller = entry.permissionAbort;
     let listener;
@@ -161,7 +169,7 @@ export class EmbeddedPiAgent {
       const delta = event.assistantMessageEvent;
       if (['text_delta', 'thinking_delta'].includes(delta.type)) this.emit(entry, { sessionUpdate: delta.type === 'text_delta' ? 'agent_message_chunk' : 'agent_thought_chunk', content: { type: 'text', text: delta.delta } });
     } else if (event.type === 'tool_execution_start') {
-      const tool = { sessionUpdate: 'tool_call', toolCallId: event.toolCallId, title: event.toolName, kind: this.kind(event.toolName), status: 'in_progress', rawInput: event.args };
+      const tool = { sessionUpdate: 'tool_call', toolCallId: event.toolCallId, title: toolTitle(event.toolName, event.args), kind: this.kind(event.toolName), status: 'in_progress', rawInput: event.args };
       if (event.args?.path) tool.locations = [{ path: path.resolve(entry.cwd, event.args.path) }];
       entry.tools.set(event.toolCallId, tool); this.emit(entry, tool);
       if (['write', 'edit'].includes(event.toolName) && event.args?.path) {
@@ -173,6 +181,7 @@ export class EmbeddedPiAgent {
       const result = event.result || event.partialResult;
       const failed = event.isError || result?.details?.timedOut || (result?.details?.exitCode != null && result.details.exitCode !== 0);
       const update = { sessionUpdate: 'tool_call_update', toolCallId: event.toolCallId, status: event.type === 'tool_execution_end' ? (failed ? 'failed' : 'completed') : 'in_progress', content: this.content(result?.content) };
+      if (entry.tools.has(event.toolCallId)) update.title = entry.tools.get(event.toolCallId).title;
       if (event.type === 'tool_execution_end') {
         update.rawInput = entry.tools.get(event.toolCallId)?.rawInput;
         update.rawOutput = { content: result?.content || [], details: result?.details || {} };

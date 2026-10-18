@@ -111,6 +111,9 @@ public class AgentIntegrationTest {
             id = c.session(servers()); assertEquals("end_turn", Json.str(c.prompt(id, "hello"), "stopReason"));
             JsonObject request = requests.get(0); assertEquals(2048, request.get("max_tokens").getAsInt()); assertEquals("test-model", Json.str(request, "model")); assertTrue(request.toString().contains("<available_skills>")); assertTrue(request.toString().contains("other_echo"));
             for (String tool : Arrays.asList("harness_echo", "write", "edit", "shell")) { mode = "tool:" + tool; calls.set(0); c.prompt(id, "use " + tool); }
+            String shellTitle = "shell: " + (System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win") ? "Write-Output '工具中文'" : "printf '工具中文'");
+            for (String status : Arrays.asList("in_progress", "completed")) assertTrue(c.updates.stream().anyMatch(u -> Json.str(u, "title").equals(shellTitle) && Json.str(u, "status").equals(status)));
+            assertTrue(c.updates.stream().anyMatch(u -> Json.str(u, "title").equals("write: file 中文.txt") && Json.str(u, "status").equals("completed")));
             assertEquals("edited content", new String(Files.readAllBytes(cwd.resolve("file 中文.txt")), StandardCharsets.UTF_8));
             assertTrue(c.updates.stream().anyMatch(u -> u.toString().contains("MCP:MCP live")));
             assertTrue(c.updates.stream().anyMatch(u -> u.toString().contains("\"type\":\"diff\"")));

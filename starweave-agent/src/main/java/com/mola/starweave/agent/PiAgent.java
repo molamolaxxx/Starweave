@@ -138,7 +138,8 @@ final class PiAgent implements AutoCloseable {
         JsonObject arguments = Json.obj(); JsonObject result; String oldText = null; Path file = null; boolean failed = false;
         try { arguments = Json.parse(Json.str(function, "arguments")); }
         catch (RuntimeException e) { result = Tools.result("Invalid JSON tool arguments"); recordResult(s, id, result, true); emit(s, Json.obj("sessionUpdate", "tool_call", "toolCallId", id, "title", name, "kind", kind(name), "status", "failed", "rawInput", preview(function))); return; }
-        JsonObject start = Json.obj("sessionUpdate", "tool_call", "toolCallId", id, "title", name, "kind", kind(name), "status", "in_progress", "rawInput", preview(arguments));
+        String title = toolTitle(name, arguments);
+        JsonObject start = Json.obj("sessionUpdate", "tool_call", "toolCallId", id, "title", title, "kind", kind(name), "status", "in_progress", "rawInput", preview(arguments));
         if (arguments.has("path")) { file = s.tools.path(arguments); start.add("locations", Json.array(Json.obj("path", file.toString()))); }
         emit(s, start);
         try {
@@ -150,7 +151,7 @@ final class PiAgent implements AutoCloseable {
             s.cancel.check();
             if (file != null && (name.equals("write") || name.equals("edit"))) { config.toolPolicy.check(file, true); oldText = Files.exists(file) ? Resources.read(file, 16 * 1024 * 1024) : ""; }
             result = tool.execute.run(arguments, s.cancel, update -> {
-                try { emit(s, Json.obj("sessionUpdate", "tool_call_update", "toolCallId", id, "status", "in_progress", "content", displayContent(update))); }
+                try { emit(s, Json.obj("sessionUpdate", "tool_call_update", "toolCallId", id, "title", title, "status", "in_progress", "content", displayContent(update))); }
                 catch (Exception e) { throw new CompletionException(e); }
             });
             JsonObject details = Json.object(result, "details");
@@ -164,7 +165,7 @@ final class PiAgent implements AutoCloseable {
                 rendered.add(Json.obj("type", "diff", "path", file.toString(), "oldText", oldText, "newText", newText));
             else rendered.add(Json.obj("type", "content", "content", Json.text("文件差异超过预览上限: " + file)));
         }
-        emit(s, Json.obj("sessionUpdate", "tool_call_update", "toolCallId", id, "status", failed ? "failed" : "completed", "content", rendered, "rawInput", preview(arguments), "rawOutput", preview(result)));
+        emit(s, Json.obj("sessionUpdate", "tool_call_update", "toolCallId", id, "title", title, "status", failed ? "failed" : "completed", "content", rendered, "rawInput", preview(arguments), "rawOutput", preview(result)));
     }
     private void recordResult(Session s, String id, JsonObject result, boolean failed) {
         s.add(Json.obj("role", "tool", "tool_call_id", id, "content", Json.GSON.toJson(result), "_failed", failed));
@@ -240,7 +241,7 @@ final class PiAgent implements AutoCloseable {
                 for (JsonElement call : Json.list(m, "tool_calls")) {
                     JsonObject c = call.getAsJsonObject(), f = Json.object(c, "function"); JsonElement args;
                     try { args = Json.parse(Json.str(f, "arguments")); } catch (RuntimeException error) { args = Json.value(Json.str(f, "arguments")); }
-                    emit(s, Json.obj("sessionUpdate", "tool_call", "toolCallId", Json.str(c, "id"), "title", Json.str(f, "name"), "kind", kind(Json.str(f, "name")), "status", "completed", "rawInput", preview(args)));
+                    emit(s, Json.obj("sessionUpdate", "tool_call", "toolCallId", Json.str(c, "id"), "title", toolTitle(Json.str(f, "name"), args), "kind", kind(Json.str(f, "name")), "status", "completed", "rawInput", preview(args)));
                 }
             } else if (role.equals("tool")) {
                 JsonObject result; try { result = Json.parse(Json.str(m, "content")); } catch (RuntimeException error) { result = Tools.result(Json.str(m, "content")); }
@@ -267,6 +268,14 @@ final class PiAgent implements AutoCloseable {
     }
     private static int wireSize(JsonObject update) { return Json.GSON.toJson(update).getBytes(java.nio.charset.StandardCharsets.UTF_8).length; }
     private static JsonElement previewWithBudget(JsonElement value, int bytes) { return Json.text(truncate(Json.GSON.toJson(withoutBinary(value)), bytes)); }
+    private static String toolTitle(String name, JsonElement arguments) {
+        JsonObject args = arguments != null && arguments.isJsonObject() ? arguments.getAsJsonObject() : null;
+        String detail = name.equals("shell") || name.equals("bash") ? Json.str(args, "command")
+                : name.equals("read") || name.equals("write") || name.equals("edit") ? Json.str(args, "path") : "";
+        detail = detail.replaceAll("\\s+", " ").trim();
+        if (detail.isEmpty()) return name;
+        return name + ": " + (detail.length() > 240 ? detail.substring(0, 237) + "..." : detail);
+    }
     private static String kind(String name) { return name.equals("read") ? "read" : name.equals("write") || name.equals("edit") ? "edit" : name.equals("shell") ? "execute" : "other"; }
     static String commandText(String text) { return text.replaceFirst("(?s)^\\s*<acp-harness>.*?</acp-harness>\\s*", "").replaceFirst("^\\[Current Time: [^\\r\\n]*]\\r?\\n", "").trim(); }
     private static boolean hasImages(JsonArray blocks) { for (JsonElement b : blocks) if (Json.str(b.getAsJsonObject(), "type").equals("image_url")) return true; return false; }
