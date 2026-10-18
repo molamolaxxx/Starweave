@@ -198,3 +198,21 @@ test('uncertain mutation result requires confirming the original environment bef
     assert.equal(h.context.environmentGate.recoveryRequired,true);assert.equal(h.locked.inert,true);
     await h.context.switchInstance('b');assert.equal(h.context.curInstance.instanceId,'a');
 });
+
+test('team history, context and session-list POST queries do not lock the environment on failure', async () => {
+    let failed=true;
+    const h=harness({fetch:async()=>new Response('{}',{status:failed?503:200})});
+    vm.runInContext(section('async function api(', 'function envName('),h.context);
+    for(const action of ['history','context','listSessions']) {
+        const result=await h.context.api('/api/starweave/v1/teams/member',{method:'POST',body:JSON.stringify({action})});
+        assert.equal(result.status,503);assert.equal(h.context.environmentGate.recoveryRequired,false);
+    }
+    failed=false;
+    assert.equal((await h.context.api('/api/starweave/v1/teams/member',{method:'POST',body:'{"action":"history"}'})).status,200);
+    failed=true;
+    await h.context.api('/api/starweave/v1/teams/member',{method:'POST',body:'{"action":"send"}'});
+    assert.equal(h.context.environmentGate.recoveryRequired,true);
+    failed=false;
+    assert.equal((await h.context.api('/api/starweave/v1/teams/member',{method:'POST',body:'{"action":"history"}'})).status,200);
+    await assert.rejects(h.context.api('/api/starweave/v1/teams/member',{method:'POST',body:'{"action":"send"}'}),/环境状态待确认/);
+});

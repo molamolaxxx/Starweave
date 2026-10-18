@@ -21,7 +21,7 @@ function harness(saved) {
   cordova: {InAppBrowser: {open: (url, target, options) => {
     const listeners = {};
     const view = {url, target, options, listeners, shown: false, closed: false,
-      scripts: [], executeScript: (details, callback) => {view.scripts.push(details.code); callback();},
+      scripts: [], executeScript: (details, callback) => {view.scripts.push(details.code); callback([view.pageOrigin || new URL(view.url).origin]);},
       addEventListener: (name, fn) => listeners[name] = fn,
       show: () => view.shown = true,
       close: () => {view.closed = true; listeners.exit();}
@@ -107,4 +107,46 @@ test('page controls are injected only into the configured server origin, includi
   assert.equal(view.scripts.length, 0); assert.equal(view.shown, true);
   view.listeners.loadstop({url: 'https://example.com/starweave/'});
   assert.equal(view.scripts.length, 1);
+});
+
+test('launcher forwards pause/resume only to the current server origin', () => {
+  const h = harness('https://example.com/starweave/'); h.ready();
+  const first = h.calls[0];
+  h.handlers.pause(); h.handlers.resume();
+  assert.equal(first.scripts.length, 2);
+  const events = [];
+  const page = vm.createContext({window: {location: {origin: 'https://example.com'}, dispatchEvent: event => events.push(event.type)}, Event: class {constructor(type) {this.type=type;}}});
+  first.scripts.forEach(code => vm.runInContext(code, page));
+  assert.deepEqual(events, ['starweave:pause', 'starweave:resume']);
+  page.window.location.origin = 'https://login.other.example.com';
+  vm.runInContext(first.scripts[1], page);
+  assert.equal(events.length, 2);
+  first.close(); h.handlers.resume();
+  assert.equal(first.scripts.length, 2);
+  h.submit('https://second.example.com'); h.handlers.resume();
+  assert.equal(first.scripts.length, 2);
+  assert.equal(h.calls[1].scripts.length, 1);
+});
+
+
+test('external link bridge and downloads use the system browser, rejecting stale views and unsafe URLs', () => {
+  const h = harness('https://example.com'); h.ready();
+  const view = h.calls[0];
+  view.listeners.message({data: {type: 'starweave-open-external', url: 'http://downloads.example.com/app.apk'}});
+  assert.equal(h.calls[1].target, '_system');
+  assert.equal(view.closed, false);
+  view.listeners.download({url: 'https://example.com/file.zip'});
+  assert.equal(h.calls[2].target, '_system');
+  for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'intent://x', 'https://user:pass@example.com/']) {
+    view.listeners.message({data: {type: 'starweave-open-external', url}});
+    view.listeners.download({url});
+  }
+  assert.equal(h.calls.length, 3);
+  view.pageOrigin = 'https://untrusted.example.com';
+  view.listeners.message({data: {type: 'starweave-open-external', url: 'https://example.com'}});
+  assert.equal(h.calls.length, 3);
+  view.close(); h.submit('https://second.example.com');
+  view.listeners.download({url: 'https://example.com/file.apk'});
+  view.listeners.message({data: {type: 'starweave-open-external', url: 'https://example.com'}});
+  assert.equal(h.calls.length, 4);
 });

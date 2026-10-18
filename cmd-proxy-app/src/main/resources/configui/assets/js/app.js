@@ -1,4 +1,5 @@
 installEnvironmentGuards();
+installChatRecoveryListeners();
 (async function init(){
 restoreSidebarState();
 await loadInstances(false);

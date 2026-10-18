@@ -23,6 +23,15 @@ Android 与 iOS 共用此 `mobile/` 工程的 `www/`、连接逻辑和页面注�
 服务端需运行且允许手机访问对应端口。HTTP 局域网连接已启用，HTTPS 使用系统证书校验。
 Agent、Node 和 JVM 在服务端运行，APK 是移动客户端，需要网络连接。
 
+1.0.4 起，APK 将退后台和回前台事件转发到当前同源服务页面。更新后的 ConfigUI 会在回前台、
+页面重新显示或网络恢复时重新核对会话、补齐历史，再续接普通/团队会话事件流；后台已结束的回复也会同步完整内容。
+草稿、已加载历史和上滑阅读位置保留，不通过整页重载恢复。此修复需要同时更新 APK 与服务端前端资源，
+仅安装新 APK 不会更新服务器页面。Android 实际后台恢复效果仍需在目标设备上验证。
+
+1.0.5 起，会话中的新窗口链接、站外链接和下载由系统浏览器接管，应用内页面和锚点继续在当前会话中打开。
+APK 下载也会转交系统浏览器。浏览器中的登录状态与应用独立，受登录保护的附件可能需要重新登录。
+此链接处理只需更新 APK；Android 系统浏览器唤起仍需目标设备验收。
+
 ## Android 构建
 
 - Node.js 22、npm
@@ -36,13 +45,13 @@ CORDOVA_JAVA_HOME=/path/to/jdk-17 ANDROID_HOME=/path/to/android-sdk bash scripts
 ```
 
 脚本安装锁定依赖、测试连接流程、恢复 Android 工程并构建。
-产物为 `dist/android/starweave-1.0.3-debug.apk`，支持 Android 7.0 / API 24 及以上。
+产物为 `dist/android/starweave-1.0.5-debug.apk`，支持 Android 7.0 / API 24 及以上。
 该包由本机构建环境的 Android debug key 签名，可直接安装用于验证。
 正式发布应使用独立、持久保存的发布签名配置；不要把 keystore 或密码提交到仓库。
 此构建目标是直接安装 APK，未配置应用商店发布。
 
 ```bash
-adb install -r dist/android/starweave-1.0.3-debug.apk
+adb install -r dist/android/starweave-1.0.5-debug.apk
 ```
 
 `config.xml`、`www/`、`res/` 和 `package-lock.json` 是源文件；

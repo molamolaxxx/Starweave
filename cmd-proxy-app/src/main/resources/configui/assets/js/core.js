@@ -6,7 +6,7 @@ var itemRefreshRuntime={robots:{},channels:{}};
 var itemToggleRuntime={robots:{},channels:{}};
 var teamSharingRuntime={instanceId:'',grants:[]};
 var channelBindingTargets={instanceId:'',sessions:[],teams:[]};
-var channelBindingTargetRequest=0;
+var channelBindingTargetRequest=0,channelBindingTargetPending=null,channelBindingTargetError='';
 var mcpAuthRuntime={servers:[],principals:[]};
 var editIdx=-1;
 var robotDialogMode='add';
@@ -227,11 +227,11 @@ function changePageSize(type){var select=document.getElementById(type==='robot'?
 
 /** 统一请求入口：自动携带当前环境标识，非本环境时由后端转发到目标环境 */
 async function api(path,opts,local){
+var mutation=apiRequestMutates(path,opts);
 if(environmentGate.switching&&!environmentGate.loading)throw new Error('环境正在切换');
-if(environmentGate.switching&&opts&&opts.method&&opts.method!=='GET')throw new Error('环境正在切换');
-if(environmentGate.recoveryRequired&&opts&&opts.method&&opts.method!=='GET')throw new Error('环境状态待确认，请重新选择环境');
+if(environmentGate.switching&&mutation)throw new Error('环境正在切换');
+if(environmentGate.recoveryRequired&&mutation)throw new Error('环境状态待确认，请重新选择环境');
 var version=environmentGate.version,controller=new AbortController(),external=opts&&opts.signal;
-var mutation=opts&&opts.method&&opts.method!=='GET'&&path.indexOf('/file-preview')<0;
 var readTimeout=!mutation&&path.indexOf('/api/agent-resources/export')!==0?setTimeout(function(){controller.abort()},15000):null;
 function abort(){controller.abort()}
 if(external){if(external.aborted)abort();else external.addEventListener('abort',abort,{once:true})}
@@ -254,6 +254,15 @@ if(required){var result;try{result=JSON.parse(new TextDecoder().decode(body))}ca
 return new Response(response.status===204||response.status===205||response.status===304?null:body,{status:response.status,statusText:response.statusText,headers:response.headers});
 }catch(e){if(required)environmentGate.loadErrors.push(e);if(mutation){environmentGate.recoveryRequired=true;syncEnvironmentGate()}throw e}
 finally{clearTimeout(readTimeout);environmentGate.requests.delete(controller);if(external)external.removeEventListener('abort',abort)}
+}
+
+function apiRequestMutates(path,opts){
+var method=String(opts&&opts.method||'GET').toUpperCase();
+if(method==='GET'||method==='HEAD'||path.indexOf('/file-preview')>=0)return false;
+if(method==='POST'&&path.split('?')[0]==='/api/starweave/v1/teams/member'){
+try{var action=JSON.parse(opts.body||'{}').action;if(['history','context','listSessions'].indexOf(action)>=0)return false}catch(ignore){}
+}
+return true;
 }
 
 function envName(inst){
@@ -413,15 +422,34 @@ if(!teamSharingRuntime.grants)teamSharingRuntime.grants=[];
 }
 
 async function loadChannelBindingTargets(){
-var request=++channelBindingTargetRequest,instanceId=(curInstance&&curInstance.instanceId)||'';
-try{var r=await api('/api/channels/binding-targets');if(!r.ok)throw new Error('HTTP '+r.status);var next=await r.json();if(request!==channelBindingTargetRequest||instanceId!==((curInstance&&curInstance.instanceId)||''))return false;channelBindingTargets=next}
-catch(e){if(request===channelBindingTargetRequest&&instanceId===((curInstance&&curInstance.instanceId)||''))return false;return false}
-if(!channelBindingTargets.sessions)channelBindingTargets.sessions=[];
-if(!channelBindingTargets.teams)channelBindingTargets.teams=[];
-return true;
+var instanceId=(curInstance&&curInstance.instanceId)||'',version=environmentGate.version,pending=channelBindingTargetPending;
+if(pending&&pending.instanceId===instanceId&&pending.version===version&&pending.request===channelBindingTargetRequest)return pending.promise;
+var request=++channelBindingTargetRequest;
+pending={instanceId:instanceId,version:version,request:request,promise:null};
+channelBindingTargetPending=pending;channelBindingTargetError='';
+function stale(){return request!==channelBindingTargetRequest||instanceId!==((curInstance&&curInstance.instanceId)||'')||version!==environmentGate.version||(environmentGate.switching&&!environmentGate.loading)}
+// true: updated, false: failed, null: superseded/cancelled during an environment switch.
+pending.promise=(async function(){
+try{
+var r=await api('/api/channels/binding-targets');
+if(!r.ok){var message='';try{var error=await r.json();message=error&&(error.message||error.error)||''}catch(ignore){}throw new Error('HTTP '+r.status+(message?'：'+message:''))}
+var next=await r.json();if(stale())return null;
+if(!next||typeof next!=='object'||Array.isArray(next)||(next.sessions&&!Array.isArray(next.sessions))||(next.teams&&!Array.isArray(next.teams)))throw new Error('绑定目标数据无效');
+next.sessions=next.sessions||[];next.teams=next.teams||[];
+channelBindingTargets=next;channelBindingTargetError='';return true;
+}catch(e){if(stale())return null;channelBindingTargetError=e.name==='AbortError'?'请求超时或已取消':(e.message||'请求失败');return false}
+finally{if(channelBindingTargetPending===pending)channelBindingTargetPending=null}
+})();
+return pending.promise;
 }
 function channelBindingTargetFingerprint(value){value=value||{};return JSON.stringify({instanceId:value.instanceId||'',sessions:value.sessions||[],teams:value.teams||[]})}
-async function refreshChannelBindingTargets(notify){var before=channelBindingTargetFingerprint(channelBindingTargets),updated=await loadChannelBindingTargets(),changed=before!==channelBindingTargetFingerprint(channelBindingTargets);if(updated&&changed&&activePage==='channels')renderChannels();if(!updated&&notify)showSnackbar('刷新信道绑定目标失败，请稍后重试');return updated}
+async function refreshChannelBindingTargets(notify){
+var instanceId=(curInstance&&curInstance.instanceId)||'',version=environmentGate.version,before=channelBindingTargetFingerprint(channelBindingTargets),updated=await loadChannelBindingTargets();
+if(instanceId!==((curInstance&&curInstance.instanceId)||'')||version!==environmentGate.version||(environmentGate.switching&&!environmentGate.loading))return null;
+if(updated===true&&before!==channelBindingTargetFingerprint(channelBindingTargets)&&activePage==='channels')renderChannels();
+if(updated===false&&notify&&activePage==='channels')showSnackbar('刷新信道绑定目标失败'+(channelBindingTargetError?'：'+channelBindingTargetError:'，请稍后重试'));
+return updated;
+}
 
 function render(){
 document.getElementById('cfgPort').value=config.configUi.port||currentPort();

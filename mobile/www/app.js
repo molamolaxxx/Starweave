@@ -9,6 +9,7 @@ function normalizeServerUrl(value) {
 }
 
 var browser = null;
+var browserOrigin = '';
 var ready = false;
 var storageKey = 'starweave.serverUrl';
 var input = document.getElementById('serverUrl');
@@ -27,6 +28,7 @@ function connect() {
     // login cookies, relative APIs and event streams. No Cordova bridge is exposed.
     browser = cordova.InAppBrowser.open(url, '_blank',
       'location=no,fullscreen=no,hardwareback=yes,zoom=no,hidden=yes');
+    browserOrigin = new URL(url).origin;
     button.disabled = true;
     var current = browser;
     var timeout = setTimeout(function () {
@@ -48,7 +50,17 @@ function connect() {
       } else current.show();
     });
     current.addEventListener('message', function (event) {
-      if (browser === current && event.data && event.data.type === 'starweave-switch-server') current.close();
+      if (browser !== current || !event.data) return;
+      if (event.data.type === 'starweave-switch-server') current.close();
+      else if (event.data.type === 'starweave-open-external') {
+        // A different-origin page must not gain native link-opening privileges.
+        current.executeScript({code: 'window.location.origin;'}, function (origins) {
+          if (browser === current && origins && origins[0] === browserOrigin) openSystemLink(event.data.url);
+        });
+      }
+    });
+    current.addEventListener('download', function (event) {
+      if (browser === current && event && /^https?:/i.test(event.url || '')) openSystemLink(event.url);
     });
     current.addEventListener('loaderror', function (event) {
       if (browser !== current) return;
@@ -58,17 +70,37 @@ function connect() {
     });
     current.addEventListener('exit', function () {
       clearTimeout(timeout);
-      if (browser === current) browser = null;
+      if (browser === current) { browser = null; browserOrigin = ''; }
       button.disabled = false;
       connectionForm.hidden = false;
     });
   } catch (error) {
     browser = null;
+    browserOrigin = '';
     button.disabled = false;
     connectionForm.hidden = false;
     connectionStatus.textContent = '连接失败：' + error.message;
   }
 }
+
+// Only explicitly supported URL schemes cross into the system browser/app.
+function openSystemLink(value) {
+  try {
+    var url = new URL(value);
+    if (!/^(https?:|mailto:|tel:)$/.test(url.protocol) || url.username || url.password) return;
+    cordova.InAppBrowser.open(url.href, '_system');
+  } catch (_) {}
+}
+
+// Cordova lifecycle belongs to the launcher WebView; relay it to the same-origin server page.
+function notifyServerLifecycle(type) {
+  var current = browser;
+  if (!current || !browserOrigin) return;
+  var code = '(function(){if(window.location.origin===' + JSON.stringify(browserOrigin) + '){window.dispatchEvent(new Event(' + JSON.stringify(type) + '));}})();';
+  try { current.executeScript({code: code}, function () {}); } catch (_) {}
+}
+document.addEventListener('pause', function () { notifyServerLifecycle('starweave:pause'); });
+document.addEventListener('resume', function () { notifyServerLifecycle('starweave:resume'); });
 
 document.getElementById('connectionForm').addEventListener('submit', function (event) {
   event.preventDefault();

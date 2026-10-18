@@ -35,7 +35,7 @@ try{var session=await starPost('open',{robotName:robot.name});endStarweaveTransi
 }
 async function loadStarweaveSessions(notify){
 if(starSessions.transitioning)return;var version=starSessions.transitionId;
-try{var previous=selectedStarSession(),previousKey=previous?(previous.groupId+'|'+previous.sessionId+'|'+previous.generation):'';var response=await api('/api/starweave/v1/sessions');var result=await response.json();if(version!==starSessions.transitionId||starSessions.transitioning)return;if(!response.ok||result.accepted===false)throw new Error(result.message||'查询失败');starSessions.items=(result.data&&result.data.sessions)||[];document.getElementById('sessionCount').textContent=starSessions.items.filter(function(s){return s.active}).length;if(starSessions.selectedGroupId&&!selectedStarSession()){closeStarweaveStream();starSessions.selectedGroupId=''}var current=selectedStarSession(),currentKey=current?(current.groupId+'|'+current.sessionId+'|'+current.generation):'';renderStarweaveSessions();renderStarweaveSessionDetail(currentKey!==previousKey);if(currentKey&&previousKey&&currentKey!==previousKey){closeStarweaveStream();starSessions.events=[];starSessions.lastSeq=0;await loadStarweaveSnapshot()}else if(currentKey)connectStarweaveStream();if(notify)showSnackbar('会话已刷新')}catch(e){if(version===starSessions.transitionId&&!starSessions.transitioning){starSessions.items=[];document.getElementById('sessionCount').textContent='0';renderStarweaveSessions();if(notify)showSnackbar('刷新会话失败: '+e.message)}}
+try{var previous=selectedStarSession(),previousKey=previous?(previous.groupId+'|'+previous.sessionId+'|'+previous.generation):'';var response=await api('/api/starweave/v1/sessions');var result=await response.json();if(version!==starSessions.transitionId||starSessions.transitioning)return;if(!response.ok||result.accepted===false)throw new Error(result.message||'查询失败');starSessions.items=(result.data&&result.data.sessions)||[];document.getElementById('sessionCount').textContent=starSessions.items.filter(function(s){return s.active}).length;if(starSessions.selectedGroupId&&!selectedStarSession()){closeStarweaveStream();starSessions.selectedGroupId=''}var current=selectedStarSession(),currentKey=current?(current.groupId+'|'+current.sessionId+'|'+current.generation):'';renderStarweaveSessions();renderStarweaveSessionDetail(currentKey!==previousKey);if(currentKey&&previousKey&&currentKey!==previousKey){closeStarweaveStream();starSessions.events=[];starSessions.lastSeq=0;await loadStarweaveSnapshot()}else if(currentKey)connectStarweaveStream();if(notify)showSnackbar('会话已刷新');return true}catch(e){if(version===starSessions.transitionId&&!starSessions.transitioning){if(notify){starSessions.items=[];document.getElementById('sessionCount').textContent='0';renderStarweaveSessions();showSnackbar('刷新会话失败: '+e.message)}}return false}
 }
 function renderStarweaveSessions(){
 var container=document.getElementById('starSessionList');if(!container)return;var q=normalized((document.getElementById('sessionSearch')||{}).value);
@@ -83,9 +83,10 @@ function scheduleStarweaveEventsRender(){if(starEventRenderFrame)return;starEven
 function cancelStarweaveEventsRender(){if(!starEventRenderFrame)return;cancelAnimationFrame(starEventRenderFrame);starEventRenderFrame=0}
 function closeStarweaveStream(){cancelStarweaveEventsRender();if(starSessions.stream){starSessions.stream.close();starSessions.stream=null}starSessions.streamKey=''}
 function appendStarweaveEvent(event,live){var session=selectedStarSession();if(!session||!event||event.groupId!==session.groupId||event.sessionId!==session.sessionId)return false;if(live&&Number(event.generation)!==Number(session.generation))return false;if(event.eventSeq<=starSessions.lastSeq)return false;if(event.type==='USER_MESSAGE_ACCEPTED')confirmChatMessage((event.payload||{}).messageId);starSessions.events.push(event);starSessions.lastSeq=event.eventSeq;if(live&&(event.type==='TURN_COMPLETED'||event.type==='TURN_ERROR'))setTimeout(function(){loadStarweaveSessions(false)},0);return true}
-async function loadStarweaveSnapshot(){
+async function loadStarweaveSnapshot(recover){
 var session=selectedStarSession();if(activePage!=='sessions'||!session||starSessions.transitioning||!session.sessionId)return;
 var version=starSessions.transitionId,key=starHistoryScope(),token=++starSessions.snapshotToken,history=chatHistoryState(starSessions,key);
+var resumeAfter=starSessions.lastSeq;
 starSessions.polling=true;
 if(!history.loaded){history.error='';renderStarweaveEvents()}
 try{
@@ -93,13 +94,22 @@ var response=await api('/api/starweave/v1/sessions/events?groupId='+encodeURICom
 if(token!==starSessions.snapshotToken||version!==starSessions.transitionId||starSessions.transitioning||key!==starHistoryScope())return;
 if(!response.ok||result.accepted===false)throw new Error(result.message||'历史加载失败');
 var data=result.data||{},events=data.events||[],watermark=Number(data.replayAfter||data.latestSeq)||0,min=events.length?Number(events[0].eventSeq):Infinity;
+// Bridge a long background gap before advancing the stream watermark.
+var page=data,seenCursors=new Set();
+while(recover&&history.loaded&&resumeAfter>0&&min>resumeAfter&&page.hasMore&&page.olderCursor&&!seenCursors.has(page.olderCursor)){
+seenCursors.add(page.olderCursor);
+var olderResponse=await api('/api/starweave/v1/sessions/events?groupId='+encodeURIComponent(session.groupId)+'&sessionId='+encodeURIComponent(session.sessionId)+'&limit=50&before='+encodeURIComponent(page.olderCursor)),older=await olderResponse.json();
+if(token!==starSessions.snapshotToken||version!==starSessions.transitionId||starSessions.transitioning||key!==starHistoryScope())return;
+if(!olderResponse.ok||older.accepted===false)throw new Error(older.message||'历史补齐失败');
+page=older.data||{};events=mergeHistoryEvents(page.events||[],events);min=events.length?Number(events[0].eventSeq):Infinity;
+}
 var retained=starSessions.events.filter(function(event){return history.loaded&&event.eventSeq<min||event.eventSeq>watermark});
 starSessions.events=mergeHistoryEvents(retained,events);
 events.forEach(function(event){if(event.type==='USER_MESSAGE_ACCEPTED')confirmChatMessage((event.payload||{}).messageId)});
 starSessions.lastSeq=Math.max(starSessions.lastSeq,watermark);
 if(!history.loaded){history.cursor=data.olderCursor;history.hasMore=!!data.hasMore}
-history.loaded=true;history.error='';renderStarweaveEvents();connectStarweaveStream();
-}catch(e){if(token===starSessions.snapshotToken&&key===starHistoryScope()){history.error=e.message;renderStarweaveEvents();showSnackbar('会话历史加载失败：'+e.message)}}
+history.loaded=true;history.error='';renderStarweaveEvents();connectStarweaveStream();return true;
+}catch(e){if(token===starSessions.snapshotToken&&key===starHistoryScope()){history.error=e.message;renderStarweaveEvents();if(!recover)showSnackbar('会话历史加载失败：'+e.message)}return false}
 finally{if(token===starSessions.snapshotToken)starSessions.polling=false}
 }
 async function loadOlderStarweaveHistory(){
@@ -117,7 +127,7 @@ var data=result.data||{};starSessions.events=mergeHistoryEvents(data.events||[],
 }catch(e){if(scope===starHistoryScope()&&history===starSessions.history)history.error=e.message}
 finally{history.loading=false;if(scope===starHistoryScope()&&history===starSessions.history)renderStarweaveEvents()}
 }
-function connectStarweaveStream(){var session=selectedStarSession();if(activePage!=='sessions'||!session||starSessions.transitioning||!session.sessionId||!chatHistoryState(starSessions,starHistoryScope()).loaded)return;var key=session.groupId+'|'+session.sessionId+'|'+session.generation;if(starSessions.stream&&starSessions.streamKey===key)return;closeStarweaveStream();var url='/api/starweave/v1/sessions/stream?groupId='+encodeURIComponent(session.groupId)+'&sessionId='+encodeURIComponent(session.sessionId)+'&generation='+encodeURIComponent(session.generation)+'&after='+encodeURIComponent(starSessions.lastSeq);if(curInstance&&curInstance.instanceId)url+='&instance='+encodeURIComponent(curInstance.instanceId);var stream=new EventSource(url);starSessions.stream=stream;starSessions.streamKey=key;stream.addEventListener('starweave',function(message){if(starSessions.stream!==stream||starSessions.streamKey!==key||starSessions.transitioning)return;try{var event=JSON.parse(message.data);if(appendStarweaveEvent(event,true))scheduleStarweaveEventsRender()}catch(e){}});stream.addEventListener('RESYNC_REQUIRED',function(){if(starSessions.stream!==stream||starSessions.transitioning)return;closeStarweaveStream();loadStarweaveSnapshot()});stream.onerror=function(){if(activePage!=='sessions'||starSessions.streamKey!==key)closeStarweaveStream()}}
+function connectStarweaveStream(){if(document.hidden||chatLifecyclePaused||(chatRecoveryPending&&chatRecoveryPending.version===environmentGate.version))return;var session=selectedStarSession();if(activePage!=='sessions'||!session||starSessions.transitioning||!session.sessionId||!chatHistoryState(starSessions,starHistoryScope()).loaded)return;var key=session.groupId+'|'+session.sessionId+'|'+session.generation;if(starSessions.stream&&starSessions.streamKey===key&&starSessions.stream.readyState!==2)return;closeStarweaveStream();var url='/api/starweave/v1/sessions/stream?groupId='+encodeURIComponent(session.groupId)+'&sessionId='+encodeURIComponent(session.sessionId)+'&generation='+encodeURIComponent(session.generation)+'&after='+encodeURIComponent(starSessions.lastSeq);if(curInstance&&curInstance.instanceId)url+='&instance='+encodeURIComponent(curInstance.instanceId);var stream=new EventSource(url);starSessions.stream=stream;starSessions.streamKey=key;stream.addEventListener('starweave',function(message){if(starSessions.stream!==stream||starSessions.streamKey!==key||starSessions.transitioning)return;try{var event=JSON.parse(message.data);if(appendStarweaveEvent(event,true))scheduleStarweaveEventsRender()}catch(e){}});stream.addEventListener('RESYNC_REQUIRED',function(){if(starSessions.stream!==stream||starSessions.transitioning)return;closeStarweaveStream();requestChatRecovery()});stream.onerror=function(){if(starSessions.stream!==stream)return;if(activePage!=='sessions'||starSessions.streamKey!==key)closeStarweaveStream();else if(stream.readyState===2){closeStarweaveStream();requestChatRecovery()}}}
 function renderStarweaveUploads(){var box=document.getElementById('starUploadList');if(!box)return;box.innerHTML=starSessions.uploads.map(function(upload,index){var state=upload.error?'error':(upload.uploadId?'ready':'uploading'),status=upload.error?' · '+esc(upload.error):(upload.uploadId?' · 已就绪':' · 上传中');return '<span class="session-upload-chip '+state+'"><span class="material-icons" style="font-size:15px">'+(upload.error?'error_outline':(upload.uploadId?'description':'hourglass_top'))+'</span>'+esc(upload.fileName)+status+'<button onclick="removeStarweaveUpload('+index+')" title="移除"><span class="material-icons" style="font-size:15px">close</span></button></span>'}).join('')}
 function removeStarweaveUpload(index){starSessions.uploads.splice(index,1);renderStarweaveUploads()}
 function fileAsBase64(file){return new Promise(function(resolve,reject){var reader=new FileReader();reader.onload=function(){var value=String(reader.result||''),comma=value.indexOf(',');resolve(comma>=0?value.slice(comma+1):value)};reader.onerror=function(){reject(new Error('读取文件失败'))};reader.readAsDataURL(file)})}
@@ -150,7 +160,7 @@ async function newStarweaveSession(){var s=selectedStarSession();if(!s){showSnac
 function openStarweaveRestoreDialog(){var s=selectedStarSession(),list=document.getElementById('starRestoreList'),confirmButton=document.getElementById('starRestoreConfirm');if(!s){showSnackbar('请先选择会话');return}if(starSessionOperationPending())return;var history=(s.sessions||[]).filter(function(item){return !item.current});if(!history.length){showSnackbar('当前无历史会话');return}if(!isAgentOperable(s.state)){showSnackbar('当前无法恢复会话：会话状态为 '+(s.state||'UNKNOWN'));return}if(!list)return;list.innerHTML=history.map(function(item,index){var id='star-history-'+index;return '<label class="session-history-option" for="'+id+'"><input type="radio" name="starRestoreTarget" id="'+id+'" value="'+esc(item.sessionId)+'" onchange="document.getElementById(\'starRestoreConfirm\').disabled=false"><strong>'+esc(item.preview||'历史会话')+'</strong><small>'+esc(item.sessionId||'')+'</small></label>'}).join('');if(confirmButton)confirmButton.disabled=true;showDialog('starRestoreDialog')}
 async function restoreStarweaveSession(){var s=selectedStarSession(),selected=document.querySelector('input[name="starRestoreTarget"]:checked'),target=selected&&selected.value;if(!s||!target)return;closeDialog('starRestoreDialog');var transition=beginStarweaveTransition('正在恢复历史会话…');try{var restored=await starPost('restore',{groupId:s.groupId,targetSessionId:target,expectedSessionId:s.sessionId,expectedGeneration:s.generation});starSessions.selectedGroupId=restored.groupId;starSessions.events=[];starSessions.lastSeq=0;starSessions.followOutput=true;endStarweaveTransition(transition);await loadStarweaveSessions(false);await refreshChannelBindingTargets(false);await loadStarweaveSnapshot();showSnackbar('历史会话已恢复')}catch(e){showSnackbar('恢复失败: '+e.message)}finally{endStarweaveTransition(transition);setStarweaveOperation('')}}
 async function deleteStarweaveSession(){var s=selectedStarSession();if(!s){showSnackbar('请先选择会话');return}if(starSessionOperationPending())return;if(s.state==='BUSY'){showSnackbar('当前无法删除会话：请先取消正在执行的任务');return}if(!await showConfirm('删除「'+s.robotName+'」的当前 Starweave 会话后，再次开启会创建全新 session。',{title:'删除当前会话？',confirmText:'删除会话',danger:true}))return;try{closeStarweaveStream();await starPost('delete',{groupId:s.groupId,expectedSessionId:s.sessionId,expectedGeneration:s.generation});starSessions.events=[];starSessions.lastSeq=0;await loadStarweaveSessions(false);await refreshChannelBindingTargets(false);showSnackbar('会话已删除')}catch(e){showSnackbar('删除失败: '+e.message)}}
-async function loadStarweaveTeams(notify){var box=document.getElementById('starTeamList');if(!box)return;try{var response=await api('/api/starweave/v1/teams'),result=await response.json();if(!response.ok||result.accepted===false)throw new Error(result.message||'团队加载失败');starTeams.items=(((result.data||{}).data||{}).teams)||[];document.getElementById('teamCount').textContent=starTeams.items.length;renderStarweaveTeams();if(notify)showSnackbar('团队已刷新')}catch(e){starTeams.items=[];document.getElementById('teamCount').textContent='0';box.innerHTML='<div class="resource-empty"><span class="material-icons">error_outline</span><strong>'+esc(e.message)+'</strong></div>';if(notify)showSnackbar('团队刷新失败: '+e.message)}}
+async function loadStarweaveTeams(notify){var box=document.getElementById('starTeamList');if(!box)return;try{var response=await api('/api/starweave/v1/teams'),result=await response.json();if(!response.ok||result.accepted===false)throw new Error(result.message||'团队加载失败');starTeams.items=(((result.data||{}).data||{}).teams)||[];document.getElementById('teamCount').textContent=starTeams.items.length;renderStarweaveTeams();if(notify)showSnackbar('团队已刷新');return true}catch(e){if(!notify)return false;starTeams.items=[];document.getElementById('teamCount').textContent='0';box.innerHTML='<div class="resource-empty"><span class="material-icons">error_outline</span><strong>'+esc(e.message)+'</strong></div>';if(notify)showSnackbar('团队刷新失败: '+e.message)}}
 function renderStarweaveTeams(){
 var box=document.getElementById('starTeamList');if(!box)return;
 if(!starTeams.items.length){box.innerHTML='<div class="filter-empty"><span class="material-icons">groups</span><p>暂无 Starweave 团队</p><small>创建团队后，可以让多个智能体在独立会话中协同工作</small></div>';return}
@@ -267,7 +277,7 @@ function closeTeamSessionDialog(){closeTeamSessionStream();closeDialog('teamSess
 function renderTeamSessionMembers(){var box=document.getElementById('teamSessionMemberList');if(!box)return;var q=normalized((document.getElementById('teamSessionSearch')||{}).value),members=teamSession.members.filter(function(member){return !q||normalized((member.displayName||member.sourceRobotName||'')+' '+member.teamMemberId).indexOf(q)>=0});box.innerHTML=members.length?members.map(function(member){return '<button class="session-item'+(member.teamMemberId===teamSession.teamMemberId?' active':'')+'" onclick="selectTeamSessionMember(\''+esc(member.teamMemberId)+'\')"><div class="session-item-row"><span class="session-status '+normalized(member.state||'starting')+'">'+esc(member.state||'STARTING')+'</span><span class="session-item-name">'+esc(member.displayName||member.sourceRobotName||member.teamMemberId)+'</span></div><div class="team-session-member-meta">'+esc((member.sessionId||'尚未创建 session').slice(0,32))+'</div></button>'}).join(''):'<div class="filter-empty" style="padding:28px 12px"><span class="material-icons">search_off</span><p>没有匹配的成员</p></div>'}
 async function selectTeamSessionMember(memberId){var member=teamSession.members.filter(function(item){return item.teamMemberId===memberId})[0];if(!member)return;closeTeamSessionStream();teamSession.snapshotToken+=1;teamSession.teamMemberId=member.teamMemberId;teamSession.acpClientId=member.acpClientId;teamSession.history=null;teamSession.messages=[];teamSession.liveItems=[];teamSession.sessions=[];teamSession.uploads=[];teamSession.lastSeq=0;teamSession.followOutput=true;var sidebar=document.querySelector('#teamSessionDialog .session-sidebar');if(sidebar)sidebar.classList.remove('open');renderTeamSessionMembers();renderTeamSessionUploads();renderTeamSessionDetail();await loadTeamSessionSnapshot()}
 function toggleTeamSessionSidebar(){var sidebar=document.querySelector('#teamSessionDialog .session-sidebar');if(sidebar)sidebar.classList.toggle('open')}
-async function loadTeamSessionSnapshot(){
+async function loadTeamSessionSnapshot(recover){
 var member=selectedTeamSessionMember(),owner=teamSession,key=teamHistoryScope(),token=++teamSession.snapshotToken;
 if(!member||!teamSession.teamId)return;
 closeTeamSessionStream();teamSession.loading=true;
@@ -278,16 +288,21 @@ if(!history.loaded){history.error='';renderTeamSessionMessages()}
 teamSessionPost('listSessions',{limit:20}).then(function(data){if(current()){teamSession.sessions=data.sessions||[];renderTeamSessionDetail(false)}}).catch(function(){});
 teamSessionPost('context').then(function(data){if(current()&&data.contextUsagePercentage!==undefined){member.contextUsagePercentage=data.contextUsagePercentage;renderTeamSessionDetail(false)}}).catch(function(){});
 try{
-var data=await teamSessionPost('history',{limit:50,sessionId:member.sessionId});
+var data=await teamSessionPost('history',recover?{limit:50}:{limit:50,sessionId:member.sessionId});
 if(!current())return;
 member.sessionId=data.sessionId||member.sessionId;
 if(key!==teamHistoryScope()){key=teamHistoryScope();history=chatHistoryState(teamSession,key)}
+var messages=data.messages||[],boundary=teamSession.recoveryBoundary,known=recover&&boundary&&boundary.scope===key?boundary.ids:new Set(teamSession.messages.map(teamMessageIdentity).filter(Boolean)),page=data,seenCursors=new Set();
+while(recover&&history.loaded&&known.size&&!messages.some(function(message){return known.has(teamMessageIdentity(message))})&&page.hasMore&&page.olderCursor&&!seenCursors.has(page.olderCursor)){
+seenCursors.add(page.olderCursor);page=await teamSessionPost('history',{limit:50,before:page.olderCursor,sessionId:member.sessionId});
+if(!current())return;messages=(page.messages||[]).concat(messages);
+}
 if(!history.loaded)teamSession.messages=[];
 teamSession.liveItems=[];
-(data.messages||[]).forEach(mergeTeamMessage);teamSession.lastSeq=Number(data.replayAfter)||0;
+messages.forEach(mergeTeamMessage);teamSession.lastSeq=Number(data.replayAfter)||0;if(recover)teamSession.recoveryBoundary=null;
 if(!history.loaded){history.cursor=data.olderCursor;history.hasMore=!!data.hasMore}
-history.loaded=true;history.error='';teamSession.loading=false;renderTeamSessionMembers();renderTeamSessionDetail();
-}catch(e){if(current()){history.error=e.message;renderTeamSessionDetail();showSnackbar('团队会话加载失败：'+e.message)}}
+history.loaded=true;history.error='';teamSession.loading=false;renderTeamSessionMembers();renderTeamSessionDetail();return true;
+}catch(e){if(current()){history.error=e.message;renderTeamSessionDetail();if(!recover)showSnackbar('团队会话加载失败：'+e.message)}return false}
 finally{if(current()){teamSession.loading=false;setTeamSessionOperation('');connectTeamSessionStream()}}
 }
 async function loadOlderTeamSessionHistory(){
@@ -338,7 +353,7 @@ if(data.replayAfter!==undefined)teamSession.liveItems=teamSession.liveItems.filt
 scheduleTeamSessionRender();
 }catch(e){}
 }
-function connectTeamSessionStream(){if(teamSession.loading)return;var member=selectedTeamSessionMember();if(!teamSession.teamId||!member||!member.sessionId||!document.getElementById('teamSessionDialog').classList.contains('show'))return;var key=teamSession.teamId+'|'+member.teamMemberId+'|'+member.sessionId;if(teamSession.stream&&teamSession.streamKey===key)return;closeTeamSessionStream();var url='/api/starweave/v1/teams/stream?teamId='+encodeURIComponent(teamSession.teamId)+'&teamMemberId='+encodeURIComponent(member.teamMemberId)+'&after='+encodeURIComponent(teamSession.lastSeq);if(curInstance&&curInstance.instanceId)url+='&instance='+encodeURIComponent(curInstance.instanceId);var stream=new EventSource(url);teamSession.stream=stream;teamSession.streamKey=key;stream.addEventListener('starweave-team',function(message){if(teamSession.stream!==stream||teamSession.streamKey!==key)return;try{var event=JSON.parse(message.data);if(appendTeamSessionEvent(event)){scheduleTeamSessionRender();refreshChannelBindingTargets(false)}}catch(e){}});stream.onerror=function(){if(teamSession.stream!==stream)return;closeTeamSessionStream();var scope=teamChatScope(),owner=teamSession;setTimeout(function(){if(owner===teamSession&&scope===teamChatScope()&&!teamSession.loading&&document.getElementById('teamSessionDialog').classList.contains('show'))loadTeamSessionSnapshot()},1000)}}
+function connectTeamSessionStream(){if(document.hidden||chatLifecyclePaused||(chatRecoveryPending&&chatRecoveryPending.version===environmentGate.version)||teamSession.loading)return;var member=selectedTeamSessionMember();if(!teamSession.teamId||!member||!member.sessionId||!document.getElementById('teamSessionDialog').classList.contains('show'))return;var key=teamSession.teamId+'|'+member.teamMemberId+'|'+member.sessionId;if(teamSession.stream&&teamSession.streamKey===key&&teamSession.stream.readyState!==2)return;closeTeamSessionStream();var url='/api/starweave/v1/teams/stream?teamId='+encodeURIComponent(teamSession.teamId)+'&teamMemberId='+encodeURIComponent(member.teamMemberId)+'&after='+encodeURIComponent(teamSession.lastSeq);if(curInstance&&curInstance.instanceId)url+='&instance='+encodeURIComponent(curInstance.instanceId);var stream=new EventSource(url);teamSession.stream=stream;teamSession.streamKey=key;stream.addEventListener('starweave-team',function(message){if(teamSession.stream!==stream||teamSession.streamKey!==key)return;try{var event=JSON.parse(message.data);if(appendTeamSessionEvent(event)){scheduleTeamSessionRender();refreshChannelBindingTargets(false)}}catch(e){}});stream.onerror=function(){if(teamSession.stream!==stream)return;rememberTeamRecoveryBoundary();closeTeamSessionStream();requestChatRecovery()}}
 function renderTeamSessionUploads(){var box=document.getElementById('teamSessionUploadList');if(!box)return;box.innerHTML=teamSession.uploads.map(function(upload,index){var state=upload.error?'error':(upload.uploadId?'ready':'uploading'),status=upload.error?' · '+esc(upload.error):(upload.uploadId?' · 已就绪':' · 上传中');return '<span class="session-upload-chip '+state+'"><span class="material-icons" style="font-size:15px">'+(upload.error?'error_outline':(upload.uploadId?'description':'hourglass_top'))+'</span>'+esc(upload.fileName)+status+'<button onclick="removeTeamSessionUpload('+index+')" title="移除"><span class="material-icons" style="font-size:15px">close</span></button></span>'}).join('')}
 function removeTeamSessionUpload(index){teamSession.uploads.splice(index,1);renderTeamSessionUploads()}
 function handleTeamSessionFileDrop(event){event.preventDefault();event.currentTarget.classList.remove('dragging');uploadTeamSessionFiles(event.dataTransfer&&event.dataTransfer.files)}
@@ -389,3 +404,60 @@ function renderFileLinkError(message){document.getElementById('fileLinkPreviewLo
 function closeFileLinkPreview(){fileLinkPreview.request+=1;fileLinkPreview.data=null;fileLinkPreview.context=null;removeFileLinkError();hideFileLinkSurfaces();document.getElementById('fileLinkDownloadButton').style.display='none';document.getElementById('fileLinkPreviewLoading').classList.remove('show');closeDialog('fileLinkPreviewDialog')}
 document.addEventListener('click',function(event){var target=event.target&&event.target.closest?event.target.closest('a.star-file-link'):null;if(!target)return;var teamRoot=target.closest('#teamSessionMessages'),sessionRoot=target.closest('#starSessionMessages'),viewerRoot=target.closest('#fileLinkPreviewDialog');if(!teamRoot&&!sessionRoot&&!viewerRoot)return;var parsed=parseStarFilePreviewTarget(target.getAttribute('data-file-target')||target.getAttribute('href'));if(!parsed||parsed.remote)return;event.preventDefault();event.stopPropagation();var useTeam=!!teamRoot||!!(viewerRoot&&fileLinkPreview.context&&fileLinkPreview.context.type==='team');openFileLinkPreview(parsed,useTeam)});
 document.addEventListener('keydown',function(event){if(event.key==='Escape'&&document.getElementById('fileLinkPreviewDialog').classList.contains('show'))closeFileLinkPreview()});
+
+
+// Restore authoritative history after WebView suspension; an OPEN EventSource may be a dead socket.
+var chatLifecyclePaused=false,chatRecoveryInstalled=false,chatRecoveryPending=null,chatRecoveryTimer=0,chatRecoveryNeeded=false,chatRecoveryEpoch=0,chatRecoveryRetry=1000;
+function chatRecoveryScope(){return environmentGate.version+'|'+((curInstance||{}).instanceId||'')+'|'+activePage+'|'+starHistoryScope()+'|'+teamHistoryScope()}
+function chatRecoveryVisible(){return !document.hidden&&!chatLifecyclePaused&&!environmentGate.switching&&!environmentGate.recoveryRequired}
+function rememberTeamRecoveryBoundary(){if(!teamSession.recoveryBoundary||teamSession.recoveryBoundary.scope!==teamHistoryScope())teamSession.recoveryBoundary={scope:teamHistoryScope(),ids:new Set(teamSession.messages.map(teamMessageIdentity).filter(Boolean))}}
+function suspendChatStreams(){rememberTeamRecoveryBoundary();chatRecoveryEpoch+=1;chatRecoveryNeeded=true;clearTimeout(chatRecoveryTimer);chatRecoveryTimer=0;closeStarweaveStream();closeTeamSessionStream()}
+function requestChatRecovery(){
+if(chatRecoveryPending&&chatRecoveryPending.epoch===chatRecoveryEpoch&&chatRecoveryPending.scope===chatRecoveryScope())return chatRecoveryPending.promise;
+chatRecoveryNeeded=true;
+if(!chatRecoveryTimer&&!chatRecoveryPending&&!document.hidden&&!chatLifecyclePaused)chatRecoveryTimer=setTimeout(function(){chatRecoveryTimer=0;recoverVisibleChats()},100);
+}
+async function recoverVisibleChats(){
+if(chatRecoveryPending)return chatRecoveryPending.promise;
+if(!chatRecoveryVisible()){if(!document.hidden&&!chatLifecyclePaused&&!chatRecoveryTimer)chatRecoveryTimer=setTimeout(function(){chatRecoveryTimer=0;recoverVisibleChats()},1000);return}
+var epoch=chatRecoveryEpoch,scope=chatRecoveryScope(),version=environmentGate.version,ordinary=activePage==='sessions'?selectedStarSession():null,ordinaryOwner=starSessions,groupId=ordinary&&ordinary.groupId;
+var dialog=document.getElementById('teamSessionDialog'),team=dialog&&dialog.classList.contains('show')?selectedTeamSessionMember():null,teamOwner=teamSession,teamId=teamSession.teamId,memberId=team&&team.teamMemberId;
+chatRecoveryNeeded=false;
+if(!ordinary&&!team)return;
+function current(){return epoch===chatRecoveryEpoch&&version===environmentGate.version&&chatRecoveryVisible()}
+var pending={epoch:epoch,scope:scope,version:version,promise:null};chatRecoveryPending=pending;
+pending.promise=(async function(){
+try{
+if(ordinary){
+closeStarweaveStream();
+if(await loadStarweaveSessions(false)===false)throw new Error('会话状态同步失败');
+if(current()&&ordinaryOwner===starSessions&&activePage==='sessions'&&groupId===starSessions.selectedGroupId&&selectedStarSession()){
+if(await loadStarweaveSnapshot(true)===false)throw new Error('会话历史补齐失败');
+}
+}
+if(team&&current()&&teamOwner===teamSession&&teamId===teamSession.teamId&&memberId===teamSession.teamMemberId&&dialog.classList.contains('show')){
+closeTeamSessionStream();
+if(await loadStarweaveTeams(false)===false)throw new Error('团队状态同步失败');
+if(!current()||teamOwner!==teamSession||teamId!==teamSession.teamId||memberId!==teamSession.teamMemberId||!dialog.classList.contains('show'))return;
+var latest=starTeams.items.filter(function(item){return item.teamId===teamId})[0];
+if(latest)teamSession.members=mergeTeamSessionMembers(teamSession.members,latest.members||[]);
+if(await loadTeamSessionSnapshot(true)===false)throw new Error('团队历史补齐失败');
+}
+chatRecoveryRetry=1000;
+}catch(e){if(current()){chatRecoveryNeeded=true;chatRecoveryRetry=Math.min(30000,chatRecoveryRetry*2)}}
+finally{
+if(chatRecoveryPending===pending)chatRecoveryPending=null;
+if(current()&&!chatRecoveryNeeded){connectStarweaveStream();connectTeamSessionStream()}
+if(chatRecoveryNeeded&&!document.hidden&&!chatLifecyclePaused&&!chatRecoveryTimer)chatRecoveryTimer=setTimeout(function(){chatRecoveryTimer=0;recoverVisibleChats()},chatRecoveryRetry);
+}
+})();
+return pending.promise;
+}
+function installChatRecoveryListeners(){
+if(chatRecoveryInstalled)return;chatRecoveryInstalled=true;
+document.addEventListener('visibilitychange',function(){if(document.hidden)suspendChatStreams();else requestChatRecovery()});
+window.addEventListener('starweave:pause',function(){chatLifecyclePaused=true;suspendChatStreams()});
+window.addEventListener('starweave:resume',function(){chatLifecyclePaused=false;requestChatRecovery()});
+window.addEventListener('pageshow',requestChatRecovery);window.addEventListener('online',requestChatRecovery);
+window.addEventListener('focus',requestChatRecovery);
+}

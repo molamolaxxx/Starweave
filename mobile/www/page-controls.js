@@ -6,6 +6,27 @@ function starweaveInstallPageControls(serverUrl) {
   var bridge = window.cordova_iab || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.cordova_iab);
   if (!bridge || typeof bridge.postMessage !== 'function') return;
   window.starweaveMobileControlsInstalled = true;
+  // WebView cannot create browser tabs; forward link clicks through the limited bridge.
+  function openExternal(value) {
+    var url;
+    try { url = new URL(value, window.location.href); } catch (_) { return false; }
+    if (!/^(https?:|mailto:|tel:)$/.test(url.protocol) || url.username || url.password) return false;
+    bridge.postMessage(JSON.stringify({type: 'starweave-open-external', url: url.href}));
+    return true;
+  }
+  document.addEventListener('click', function (event) {
+    var link = event.target.closest && event.target.closest('a[href]');
+    if (!link || event.defaultPrevented || event.button > 0) return;
+    var url;
+    try { url = new URL(link.href, window.location.href); } catch (_) { return; }
+    // Keep in-page anchors and normal application navigation inside the current view.
+    if (url.origin === window.location.origin && url.pathname === window.location.pathname &&
+        url.search === window.location.search && url.hash && !link.hasAttribute('download')) return;
+    if (link.target === '_blank' || url.origin !== window.location.origin || link.hasAttribute('download') || /\.apk$/i.test(url.pathname)) {
+      if (openExternal(url.href)) event.preventDefault();
+    }
+  });
+  window.open = function (url) { openExternal(url); return null; };
   var section = document.getElementById('page-basic');
   var port = document.getElementById('cfgPort');
   var settingsBody = port && port.closest('.card-body');

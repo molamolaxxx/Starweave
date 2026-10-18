@@ -81,10 +81,39 @@ const server = http.createServer((request, response) => {
         starweaveInstallPageControls('https://starweave.example.com/path/'); starweaveInstallPageControls();
       });
       assert.equal(await page.locator('#starweaveMobileSettings').count(), 1);
+      const routed = await page.evaluate(() => {
+        const origin = location.origin;
+        const results = [];
+        function click(href, target, download) {
+          const a = document.createElement('a'); a.href = href; a.target = target || '';
+          if (download) a.setAttribute('download', '');
+          a.innerHTML = '<span>download</span>'; document.body.appendChild(a);
+          const before = nativeMessages.length;
+          const event = new MouseEvent('click', {bubbles: true, cancelable: true, button: 0});
+          // Cancel non-intercepted navigation after the APK handler has run.
+          a.querySelector('span').dispatchEvent(event);
+          results.push({prevented: event.defaultPrevented, message: nativeMessages.length > before ? nativeMessages.at(-1) : null});
+          a.remove();
+        }
+        click('http://downloads.example.com/test.apk', '_blank');
+        click(origin + '/attachment', '_blank');
+        click(origin + '/file', '', true);
+        click(origin + '/client.apk');
+        click('#anchor');
+        window.open('https://example.com/docs');
+        return {results, last: nativeMessages.at(-1)};
+      });
+      routed.results.slice(0, 4).forEach(result => {
+        assert.equal(result.prevented, true);
+        assert.equal(result.message.type, 'starweave-open-external');
+      });
+      assert.equal(routed.results[4].message, null);
+      assert.equal(routed.last.url, 'https://example.com/docs');
+
       assert.equal(await page.evaluate(() => document.getElementById('starweaveMobileSettings').closest('.card') === document.getElementById('cfgPort').closest('.card')), true);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       assert.equal(await page.inputValue('#starweaveMobileServer'), 'https://starweave.example.com/path/');
-      assert.equal(await page.evaluate(() => nativeMessages.at(-1).theme), 'light');
+      assert.equal(await page.evaluate(() => nativeMessages.filter(m => m.type === 'starweave-theme').at(-1).theme), 'light');
       const rows = await page.evaluate(() => {
         const proxy = document.getElementById('globalProxy').closest('.toggle-row');
         const address = document.getElementById('starweaveMobileSettings');
@@ -109,9 +138,9 @@ const server = http.createServer((request, response) => {
       await page.locator('.nav-item[data-page="basic"]').click();
       await page.evaluate(() => applyStarweaveTheme('dark'));
       // Reading via the next browser task lets MutationObserver deliver the update.
-      assert.equal(await page.evaluate(() => nativeMessages.at(-1).theme), 'dark');
+      assert.equal(await page.evaluate(() => nativeMessages.filter(m => m.type === 'starweave-theme').at(-1).theme), 'dark');
       await page.evaluate(() => applyStarweaveTheme('light'));
-      assert.equal(await page.evaluate(() => nativeMessages.at(-1).theme), 'light');
+      assert.equal(await page.evaluate(() => nativeMessages.filter(m => m.type === 'starweave-theme').at(-1).theme), 'light');
       await page.click('#starweaveMobileSwitch');
       assert.equal(await page.evaluate(() => nativeMessages.at(-1).type), 'starweave-switch-server');
       if (width === 390 && process.env.PREVIEW_PATH) await page.screenshot({path: process.env.PREVIEW_PATH});
