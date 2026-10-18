@@ -1,6 +1,6 @@
 {
   "name": "starweave-android",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "description": "Starweave Android client, using MolaChat's Apache Cordova stack",
   "scripts": {

@@ -32,6 +32,9 @@ Agent、Node 和 JVM 在服务端运行，APK 是移动客户端，需要网络�
 APK 下载也会转交系统浏览器。浏览器中的登录状态与应用独立，受登录保护的附件可能需要重新登录。
 此链接处理只需更新 APK；Android 系统浏览器唤起仍需目标设备验收。
 
+1.0.6 起，APK 关闭 WebView 默认的矩形触摸高亮，按钮和链接使用轻微透明度变化提供按压反馈；
+保留键盘焦点、输入框聚焦和文字选择。此调整只需更新 APK，不依赖服务端发布。
+
 ## Android 构建
 
 - Node.js 22、npm
@@ -45,13 +48,13 @@ CORDOVA_JAVA_HOME=/path/to/jdk-17 ANDROID_HOME=/path/to/android-sdk bash scripts
 ```
 
 脚本安装锁定依赖、测试连接流程、恢复 Android 工程并构建。
-产物为 `dist/android/starweave-1.0.5-debug.apk`，支持 Android 7.0 / API 24 及以上。
+产物为 `dist/android/starweave-1.0.6-debug.apk`，支持 Android 7.0 / API 24 及以上。
 该包由本机构建环境的 Android debug key 签名，可直接安装用于验证。
 正式发布应使用独立、持久保存的发布签名配置；不要把 keystore 或密码提交到仓库。
 此构建目标是直接安装 APK，未配置应用商店发布。
 
 ```bash
-adb install -r dist/android/starweave-1.0.5-debug.apk
+adb install -r dist/android/starweave-1.0.6-debug.apk
 ```
 
 `config.xml`、`www/`、`res/` 和 `package-lock.json` 是源文件；

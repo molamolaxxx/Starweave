@@ -48,6 +48,7 @@ function starweaveInstallPageControls(serverUrl) {
   new MutationObserver(syncTheme).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
 
   var style = document.createElement('style');
-  style.textContent = '#starweaveMobileSettings{display:block}#starweaveMobileSettings .field-group{margin:8px 0 0}#starweaveMobileSettings .field-row{display:flex;flex-wrap:nowrap;gap:8px}#starweaveMobileSettings input{flex:1;min-width:0}#starweaveMobileSettings button{flex:0 0 auto;white-space:nowrap}';
+  // Suppress WebView's rectangular tap overlay without removing keyboard focus or text selection.
+  style.textContent = 'html{-webkit-tap-highlight-color:transparent}button:focus:not(:focus-visible),a:focus:not(:focus-visible),[role=button]:focus:not(:focus-visible){outline:none}button:enabled:active,a[href]:active,[role=button]:not([aria-disabled=true]):active{opacity:.78}' + '#starweaveMobileSettings{display:block}#starweaveMobileSettings .field-group{margin:8px 0 0}#starweaveMobileSettings .field-row{display:flex;flex-wrap:nowrap;gap:8px}#starweaveMobileSettings input{flex:1;min-width:0}#starweaveMobileSettings button{flex:0 0 auto;white-space:nowrap}';
   document.head.appendChild(style);
 }

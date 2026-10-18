@@ -12,3 +12,8 @@ input:focus { border-color: #8e9eff; }
 button { width: 100%; min-height: 52px; border: 0; border-radius: 12px; background: #8798ff; color: #0b1020; font: inherit; font-weight: 600; }
 button:disabled { opacity: .55; }
 #status { min-height: 44px; color: #ffbdbd; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+
+/* Match the server view: subtle press feedback, with keyboard focus retained. */
+html { -webkit-tap-highlight-color: transparent; }
+button:focus:not(:focus-visible), a:focus:not(:focus-visible) { outline: none; }
+button:enabled:active, a[href]:active { opacity: .78; }
