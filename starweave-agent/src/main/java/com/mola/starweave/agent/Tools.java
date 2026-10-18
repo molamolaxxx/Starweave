@@ -100,32 +100,52 @@ final class Tools implements AutoCloseable {
         Process child;
         try { child = builder.start(); } catch (IOException e) { if (pidFile != null) Files.deleteIfExists(pidFile); throw e; }
         child.getOutputStream().close();
+        return executeShell(child, seconds, cancel, update, windows, pidFile);
+    }
+    static JsonObject executeShell(Process child, int seconds, Cancellation cancel, Consumer<JsonObject> update, boolean windows, Path pidFile) throws Exception {
         StringBuilder output = new StringBuilder();
         CompletableFuture<Void> drained = new CompletableFuture<>();
+        java.util.concurrent.atomic.AtomicBoolean outputActive = new java.util.concurrent.atomic.AtomicBoolean(true);
         Thread pump = McpConnection.daemon("shell-output", () -> {
             try (Reader in = new InputStreamReader(child.getInputStream(), StandardCharsets.UTF_8)) {
                 char[] buffer = new char[2048]; int n; long last = 0;
                 while ((n = in.read(buffer)) != -1) {
                     String snapshot;
-                    synchronized (output) { output.append(buffer, 0, n); if (output.length() > 64000) output.delete(0, output.length() - 64000); snapshot = output.toString(); }
-                    if (System.nanoTime() - last > TimeUnit.MILLISECONDS.toNanos(150)) { last = System.nanoTime(); update.accept(result(snapshot)); }
+                    synchronized (output) { if (!outputActive.get()) break; output.append(buffer, 0, n); if (output.length() > 64000) output.delete(0, output.length() - 64000); snapshot = output.toString(); }
+                    if (outputActive.get() && System.nanoTime() - last > TimeUnit.MILLISECONDS.toNanos(150)) { last = System.nanoTime(); update.accept(result(snapshot)); }
                 }
                 drained.complete(null);
             } catch (Exception e) { drained.completeExceptionally(e); }
         });
-        boolean timedOut;
-        try (AutoCloseable hook = cancel.onCancel(() -> killTree(child, windows, pidFile))) {
-            timedOut = !child.waitFor(seconds, TimeUnit.SECONDS);
-            if (timedOut) killTree(child, windows, pidFile);
-            child.waitFor(3, TimeUnit.SECONDS);
-            try { drained.get(3, TimeUnit.SECONDS); }
-            catch (TimeoutException e) { child.getInputStream().close(); }
-            catch (ExecutionException e) { if (!timedOut && !cancel.isCancelled()) throw e; }
+        java.util.concurrent.atomic.AtomicBoolean cleanupStarted = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable cleanup = () -> {
+            if (!cleanupStarted.compareAndSet(false, true)) return;
+            McpConnection.daemon("shell-cleanup", () -> {
+                try { if (child.isAlive()) killTree(child, windows, pidFile); }
+                finally {
+                    try { child.getInputStream().close(); } catch (IOException ignored) { }
+                    if (pidFile != null) try { Files.deleteIfExists(pidFile); } catch (IOException ignored) { }
+                }
+            });
+        };
+        boolean timedOut = false;
+        try (AutoCloseable hook = cancel.onCancel(cleanup)) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
+            while (!child.waitFor(50, TimeUnit.MILLISECONDS)) {
+                cancel.check();
+                if (System.nanoTime() >= deadline) { timedOut = true; cleanup.run(); break; }
+            }
+            cancel.check();
+            // A descendant may hold the pipe indefinitely. Neither draining nor closing
+            // that pipe may block the tool's completion/cancellation thread.
+            if (!timedOut) try { drained.get(100, TimeUnit.MILLISECONDS); }
+            catch (TimeoutException ignored) { }
+            catch (ExecutionException e) { if (!cancel.isCancelled()) throw e; }
             cancel.check();
             int code = child.isAlive() ? -1 : child.exitValue(); String text;
-            synchronized (output) { text = output.toString(); }
-            return Json.obj("content", Json.array(Json.text(text + (timedOut ? "\nCommand timed out." : "\nExit code: " + code))), "details", Json.obj("exitCode", code, "timedOut", timedOut));
-        } finally { if (child.isAlive()) killTree(child, windows, pidFile); child.getInputStream().close(); pump.interrupt(); if (pidFile != null) Files.deleteIfExists(pidFile); }
+            synchronized (output) { outputActive.set(false); text = output.toString(); }
+            return Json.obj("content", Json.array(Json.text(text + (timedOut ? "\nCommand timed out. Background processes may still be running." : "\nExit code: " + code))), "details", Json.obj("exitCode", code, "timedOut", timedOut));
+        } finally { outputActive.set(false); cleanup.run(); pump.interrupt(); }
     }
     static List<String> shellInvocation(String command, boolean windows, Map<String, String> env) {
         if (!windows) return Arrays.asList("/bin/sh", "-c", command);

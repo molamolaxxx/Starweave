@@ -22,6 +22,6 @@ try {
   if (extract.error || extract.status !== 0) throw extract.error || new Error('Dependency extraction failed');
   await fs.cp(path.join(resource, 'integration'), path.join(temp, 'integration'), { recursive: true });
   await fs.cp(path.join(resource, 'test'), path.join(temp, 'test'), { recursive: true });
-  const result = spawnSync(process.execPath, ['--test', path.join(temp, 'test/agent.test.mjs')], { cwd: temp, stdio: 'inherit', timeout: 120000 });
+  const result = spawnSync(process.execPath, ['--test', ...['agent.test.mjs', 'shell.test.mjs'].map(name => path.join(temp, 'test', name))], { cwd: temp, stdio: 'inherit', timeout: 120000 });
   if (result.error || result.status !== 0) throw result.error || new Error(`Embedded Pi tests failed: ${result.status}`);
 } finally { await fs.rm(temp, { recursive: true, force: true }); }

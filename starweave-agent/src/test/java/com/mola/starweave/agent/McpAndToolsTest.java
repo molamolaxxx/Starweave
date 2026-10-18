@@ -75,6 +75,40 @@ public class McpAndToolsTest {
             } finally { cancel.cancel(); executor.shutdownNow(); }
         }
     }
+    @Test(timeout=5000) public void shellReturnsEvenWhenKillAndPipeCloseBlock() throws Exception {
+        for (int mode : new int[] { 0, 1, 2 }) {
+            final boolean abort = mode == 1, exited = mode == 2;
+            CountDownLatch release = new CountDownLatch(1), reading = new CountDownLatch(1);
+            Process stuck = new Process() {
+                final InputStream input = new InputStream() {
+                    @Override public int read() { reading.countDown(); awaitRelease(); return -1; }
+                    @Override public void close() { awaitRelease(); }
+                };
+                void awaitRelease() { try { release.await(); } catch (InterruptedException ignored) { } }
+                @Override public InputStream getInputStream() { return input; }
+                @Override public InputStream getErrorStream() { return input; }
+                @Override public OutputStream getOutputStream() { return new ByteArrayOutputStream(); }
+                @Override public int waitFor() { awaitRelease(); return 0; }
+                @Override public boolean waitFor(long n, TimeUnit unit) throws InterruptedException { return exited || release.await(n, unit); }
+                @Override public int exitValue() { if (!exited && release.getCount() > 0) throw new IllegalThreadStateException(); return 0; }
+                @Override public void destroy() { awaitRelease(); }
+            };
+            Cancellation cancel = new Cancellation(); ExecutorService pool = Executors.newSingleThreadExecutor();
+            try {
+                Future<JsonObject> pending = pool.submit(() -> Tools.executeShell(stuck, 1, cancel, update -> { }, false, null));
+                assertTrue(reading.await(1, TimeUnit.SECONDS));
+                if (abort) {
+                    long start = System.nanoTime(); cancel.cancel();
+                    assertTrue("cancel caller must not wait for process cleanup", System.nanoTime() - start < TimeUnit.MILLISECONDS.toNanos(500));
+                    try { pending.get(1, TimeUnit.SECONDS); fail("expected cancellation"); }
+                    catch (ExecutionException e) { assertTrue(e.getCause() instanceof CancellationException); }
+                } else {
+                    JsonObject details = Json.object(pending.get(exited ? 1 : 2, TimeUnit.SECONDS), "details");
+                    assertEquals(!exited, details.get("timedOut").getAsBoolean());
+                }
+            } finally { release.countDown(); cancel.cancel(); pool.shutdownNow(); }
+        }
+    }
     @Test public void windowsShellEncodingAndProxyIsolation() throws Exception {
         String command = "Write-Output \"中文 $x `test`\"";
         List<String> argv = Tools.shellInvocation(command, true, Collections.singletonMap("SystemRoot", "C:\\Windows"));
