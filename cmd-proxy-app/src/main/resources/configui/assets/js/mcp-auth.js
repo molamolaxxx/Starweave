@@ -1,5 +1,5 @@
 async function loadMcpAuth(){
-try{var sr=await api('/api/mcp-auth/v1/servers'),pr=await api('/api/mcp-auth/v1/principals');
+try{var responses=await Promise.all([api('/api/mcp-auth/v1/servers'),api('/api/mcp-auth/v1/principals')]),sr=responses[0],pr=responses[1];
 var sd=sr.ok?await sr.json():{servers:[]},pd=pr.ok?await pr.json():{principals:[]};
 mcpAuthRuntime={servers:sd.servers||[],principals:pd.principals||[]};renderMcpAuth();}
 catch(e){mcpAuthRuntime={servers:[],principals:[]}}

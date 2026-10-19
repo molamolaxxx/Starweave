@@ -617,7 +617,9 @@ public class AcpClient extends AbstractAcpClient {
         this.observationManager = manager;
         this.observationOwner = owner;
         manager.register(this, owner, workspacePath,
-                () -> robotParam != null && robotParam.isEnabled() && robotParam.isObservationEnabled(), delivery);
+                () -> robotParam != null && robotParam.isEnabled() && robotParam.isObservationEnabled(),
+                robotParam != null && com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.PROVIDER.equals(robotParam.getAgentProvider())
+                        ? robotParam.getName() : null, delivery);
     }
 
     private String executeMcpObservation(String tool, JsonObject arguments) {

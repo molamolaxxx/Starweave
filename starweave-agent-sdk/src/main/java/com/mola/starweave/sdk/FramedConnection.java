@@ -8,7 +8,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Independent bounded queues; resource chunks never occupy heartbeat/ACP admission slots. */
+/** Independent bounded queues; resource and observation chunks do not occupy heartbeat/ACP slots. */
 public final class FramedConnection implements Closeable {
     private static final int CHUNK_BYTES = 32768;
     private final Socket socket;
@@ -29,7 +29,8 @@ public final class FramedConnection implements Closeable {
     }
     public void send(JsonObject f) throws IOException {
         String type = Wire.str(f, "type");
-        boolean resource = Arrays.asList("resources_request", "resources_response").contains(type);
+        // Cancellation shares FIFO with execution so it cannot overtake a chunked request.
+        boolean resource = Arrays.asList("resources_request", "resources_response", "observation_execute", "observation_result", "observation_cancel").contains(type);
         byte[] bytes = f.toString().getBytes(StandardCharsets.UTF_8);
         if (bytes.length > Wire.MAX_FRAME) throw new IOException("Remote ACP frame exceeds limit");
         if (resource && bytes.length > CHUNK_BYTES) {
@@ -67,7 +68,7 @@ public final class FramedConnection implements Closeable {
                 assemblies.remove(id);
                 try {
                     JsonObject value = JsonParser.parseString(new String(assembly.bytes.toByteArray(), StandardCharsets.UTF_8)).getAsJsonObject();
-                    if (!Arrays.asList("resources_request", "resources_response").contains(Wire.str(value, "type"))) throw new IOException("Invalid chunked message type"); return value;
+                    if (!Arrays.asList("resources_request", "resources_response", "observation_execute", "observation_result", "observation_cancel").contains(Wire.str(value, "type"))) throw new IOException("Invalid chunked message type"); return value;
                 } catch (JsonParseException e) { throw new IOException("Invalid resource message", e); }
             }
         }

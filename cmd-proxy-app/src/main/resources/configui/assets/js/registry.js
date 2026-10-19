@@ -79,19 +79,21 @@ if(clear&&!registryState.accessPasswordSet){showSnackbar('此环境尚未设置�
 if(!clear&&!password){showSnackbar('请先填写要设置的环境密码');return}
 return configureRegistry({accessPassword:clear?'':password});
 }
-var registryAccessChecks={},registryAccessPrompt=null;
+var registryAccessChecks={},registryAccessVerifiedUntil={},registryAccessPrompt=null;
 var registryRawFetch=typeof window!=='undefined'&&window.fetch?window.fetch.bind(window):null;
 async function registryAccessRequest(id,options){
 var controller=new AbortController(),timer=setTimeout(function(){controller.abort()},15000);
 try{return await registryRawFetch('/api/registry/access?instance='+encodeURIComponent(id),Object.assign({},options,{credentials:'same-origin',signal:controller.signal}))}finally{clearTimeout(timer)}
 }
-function ensureRegistryEnvironmentAccess(id){
+function ensureRegistryEnvironmentAccess(id,force){
 if(!id||id.indexOf('remote-')!==0)return Promise.resolve(true);
+if(!force&&registryAccessVerifiedUntil[id]>Date.now())return Promise.resolve(true);
 if(registryAccessChecks[id])return registryAccessChecks[id];
 var check=(async function(){
 try{var response=await registryAccessRequest(id),state=await response.json();if(!response.ok){showSnackbar(registryFriendlyError(state.error,response.status));return false}
-if(state.authenticated)return true;
-return await promptRegistryEnvironmentAccess(id);
+if(state.authenticated){registryAccessVerifiedUntil[id]=Math.min(Date.now()+30000,state.expiresAt>0?state.expiresAt:Infinity);return true}
+delete registryAccessVerifiedUntil[id];
+var allowed=await promptRegistryEnvironmentAccess(id);if(allowed)registryAccessVerifiedUntil[id]=Date.now()+30000;return allowed;
 }catch(e){showSnackbar(registryFriendlyError(e));return false}
 })();
 registryAccessChecks[id]=check;
@@ -126,9 +128,13 @@ if(registryRawFetch)window.fetch=async function(resource,options){
 var url;try{url=new URL(typeof resource==='string'?resource:resource.url,window.location.href)}catch(e){return registryRawFetch(resource,options)}
 var id=url.searchParams.get('instance');
 if(url.origin===window.location.origin&&url.pathname.indexOf('/api/')===0&&url.pathname!=='/api/registry/access'&&id&&id.indexOf('remote-')===0){
-if(!await ensureRegistryEnvironmentAccess(id))return new Response(JSON.stringify({accepted:false,code:'ENVIRONMENT_LOCKED',message:'尚未验证环境密码，操作未执行',error:'尚未验证环境密码，操作未执行'}),{status:401,headers:{'Content-Type':'application/json'}});
+var method=String(options&&options.method||resource&&resource.method||'GET').toUpperCase();
+if(!await ensureRegistryEnvironmentAccess(id,method!=='GET'&&method!=='HEAD'))return new Response(JSON.stringify({accepted:false,code:'ENVIRONMENT_LOCKED',message:'尚未验证环境密码，操作未执行',error:'尚未验证环境密码，操作未执行'}),{status:401,headers:{'Content-Type':'application/json'}});
 }
-return registryRawFetch(resource,options);
+var response=await registryRawFetch(resource,options);
+// 服务端仍校验每个请求；失效后清除预检缓存，不自动重放业务操作。
+if(id&&(response.status===401||response.status===403))delete registryAccessVerifiedUntil[id];
+return response;
 };
 if(typeof document.addEventListener==='function')document.addEventListener('keydown',function(event){if(event.key==='Escape'&&registryAccessPrompt){event.preventDefault();finishRegistryAccess(false)}});
 // 下载链接不经过 fetch；同样先验证，再保持原来的下载行为。

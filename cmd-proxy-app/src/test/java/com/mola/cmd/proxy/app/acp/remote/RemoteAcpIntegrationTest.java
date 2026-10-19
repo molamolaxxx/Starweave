@@ -91,6 +91,108 @@ public class RemoteAcpIntegrationTest {
     private AcpRobotParam robot() throws Exception { return JSON.parseObject(new String(Files.readAllBytes(config), StandardCharsets.UTF_8)).getJSONArray("robots").getJSONObject(0).toJavaObject(AcpRobotParam.class); }
     @After public void stop() { if (sdk != null) sdk.close(); if (manager != null) manager.close(); if (http != null) http.stop(0); if (httpThreads != null) httpThreads.shutdownNow(); McpAuthManager.getInstance().setBaseUrl(previousMcp); if (previousHome == null) System.clearProperty("cmd.proxy.home"); else System.setProperty("cmd.proxy.home", previousHome); }
 
+    @Test(timeout=15000) public void observationUsesRemoteWorkspaceWithoutOpeningModelRuntime() throws Exception {
+        // No model configuration or runtime: the host connection alone is sufficient.
+        Files.write(workspace.resolve("observation.txt"), "remote-only".getBytes(StandardCharsets.UTF_8));
+        JsonObject result = manager.executeObservation("test-remote",
+                "module.exports=()=>require('fs').readFileSync('observation.txt','utf8')");
+        assertTrue(result.toString(), result.get("success").getAsBoolean());
+        assertEquals("remote-only", Wire.str(result, "result"));
+        assertNull(lastModelRequest.get());
+        assertTrue(RemoteAcpManager.online("test-remote"));
+        assertFalse(manager.executeObservation("test-remote", "module.exports=()=>42").get("success").getAsBoolean());
+        assertEquals("still-connected", Wire.str(manager.executeObservation("test-remote",
+                "module.exports=()=> 'still-connected'"), "result"));
+    }
+
+    @Test(timeout=15000) public void observationThroughManagerUsesRemoteForTestAndBackgroundAndKeepsBaselineOnDisconnect() throws Exception {
+        com.mola.cmd.proxy.app.acp.observation.ObservationManager observations =
+                new com.mola.cmd.proxy.app.acp.observation.ObservationManager(temp.newFolder("observations").toPath());
+        com.mola.cmd.proxy.app.acp.schedule.model.ScheduleOwnerKey owner =
+                com.mola.cmd.proxy.app.acp.schedule.model.ScheduleOwnerKey.main("test-remote");
+        Path centralWorkspace = temp.newFolder("central-workspace").toPath();
+        Files.write(centralWorkspace.resolve("value.txt"), "wrong-machine".getBytes(StandardCharsets.UTF_8));
+        Files.write(workspace.resolve("value.txt"), "remote-A".getBytes(StandardCharsets.UTF_8));
+        observations.registerConfigured(owner, centralWorkspace.toString(), () -> true, "test-remote", prompt -> true);
+        JsonObject input = new JsonObject(); input.addProperty("name", "remote files"); input.addProperty("frequency", "60h");
+        input.addProperty("eventAction", "report changes");
+        input.addProperty("script", "module.exports=()=>require('fs').readFileSync('value.txt','utf8')");
+        try {
+            String id = Wire.str(observations.create(owner.getPersistencePath(), input), "id");
+            assertEquals("remote-A", Wire.str(observations.test(owner.getPersistencePath(), input), "result"));
+            assertFalse(observations.get(id, null).has("baseline"));
+            observations.tick(); until(() -> observations.get(id, null).has("baseline"));
+            assertEquals("remote-A", Wire.str(observations.get(id, null), "baseline"));
+            Files.write(workspace.resolve("value.txt"), "remote-B".getBytes(StandardCharsets.UTF_8));
+            observations.update(id, null, new JsonObject()); observations.tick();
+            until(() -> "remote-B".equals(Wire.str(observations.get(id, null), "baseline")));
+            assertEquals(1, observations.events(null, id, null, null, 1, 10).getAsJsonArray("items").size());
+            sdk.close(); until(() -> !RemoteAcpManager.online("test-remote"));
+            observations.update(id, null, new JsonObject()); observations.tick();
+            until(() -> observations.get(id, null).has("lastError"));
+            assertEquals("remote-B", Wire.str(observations.get(id, null), "baseline"));
+            assertFalse(observations.test(owner.getPersistencePath(), input).get("success").getAsBoolean());
+            assertEquals("远端 · test-remote", Wire.str(observations.get(id, null), "lastExecutionLocation"));
+            assertNull(lastModelRequest.get());
+        } finally { observations.close(); }
+    }
+
+    @Test(timeout=30000) public void remoteObservationTimeoutKeepsHostOnlineAndDoesNotStartModel() throws Exception {
+        JsonObject result = manager.executeObservation("test-remote",
+                "module.exports=()=>new Promise(resolve=>setTimeout(()=>resolve('too late'),60000))");
+        assertFalse(result.get("success").getAsBoolean());
+        assertTrue(Wire.str(result, "error").contains("超时"));
+        assertTrue(RemoteAcpManager.online("test-remote"));
+        assertEquals("after-timeout", Wire.str(manager.executeObservation("test-remote", "module.exports=()=> 'after-timeout'"), "result"));
+        assertNull(lastModelRequest.get());
+    }
+
+    @Test(timeout=15000) public void observationTransfersLargeResultAndRejectsOldSdk() throws Exception {
+        JsonObject large = manager.executeObservation("test-remote", "module.exports=()=> '中文'.repeat(100000)");
+        assertTrue(large.toString().substring(0, 100), large.get("success").getAsBoolean());
+        assertEquals(200000, Wire.str(large, "result").length());
+        HttpURLConnection discovery = (HttpURLConnection) new URL(base + "/api/remote-acp/discover").openConnection();
+        int port;
+        try (Reader reader = new InputStreamReader(discovery.getInputStream(), StandardCharsets.UTF_8)) {
+            port = JsonParser.parseReader(reader).getAsJsonObject().get("port").getAsInt();
+        } finally { discovery.disconnect(); }
+        try (Socket oldSdk = new Socket("127.0.0.1", port)) {
+            oldSdk.setSoTimeout(5000);
+            JsonObject hello = Wire.frame("register", null); hello.addProperty("protocolVersion", Wire.VERSION);
+            hello.addProperty("name", "legacy-remote"); hello.addProperty("identity", "legacy-remote-identity-123456");
+            hello.addProperty("workspace", workspace.toString()); hello.addProperty("starweaveUrl", base);
+            Wire.write(oldSdk.getOutputStream(), hello);
+            assertEquals("registered", Wire.str(Wire.read(oldSdk.getInputStream()), "type"));
+            try { manager.executeObservation("legacy-remote", "module.exports=()=> 'wrong-machine'"); fail("Old SDK must not execute locally"); }
+            catch (IOException expected) { assertTrue(expected.getMessage().contains("升级")); }
+        }
+    }
+
+    @Test(timeout=15000) public void disconnectFailsInflightObservationAndReconnectedHostCanObserveAgain() throws Exception {
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        try {
+            Future<JsonObject> request = worker.submit(() -> manager.executeObservation("test-remote",
+                    "module.exports=()=>{require('fs').writeFileSync('observation-started','yes');return new Promise(resolve=>setTimeout(()=>resolve('late'),60000))}"));
+            until(() -> Files.exists(workspace.resolve("observation-started")));
+            sdk.close();
+            try { request.get(5, TimeUnit.SECONDS); fail("Disconnected request must fail"); }
+            catch (ExecutionException expected) { assertTrue(expected.getCause().getMessage().contains("远端")); }
+            until(() -> !RemoteAcpManager.online("test-remote"));
+            sdk = StarcoreClient.builder().starweaveUrl(base).name("test-remote").workspace(workspace).dataDirectory(data).allowShell(true).start();
+            until(() -> RemoteAcpManager.online("test-remote"));
+            assertEquals("reconnected", Wire.str(manager.executeObservation("test-remote", "module.exports=()=> 'reconnected'"), "result"));
+            assertNull(lastModelRequest.get());
+        } finally { worker.shutdownNow(); }
+    }
+
+    @Test(timeout=15000) public void observationRejectsHostWithoutShellPermission() throws Exception {
+        sdk.close(); until(() -> !RemoteAcpManager.online("test-remote"));
+        sdk = StarcoreClient.builder().starweaveUrl(base).name("test-remote").workspace(workspace).dataDirectory(data).start();
+        until(() -> RemoteAcpManager.online("test-remote"));
+        try { manager.executeObservation("test-remote", "module.exports=()=> 'forbidden'"); fail("Shell must be granted by host"); }
+        catch (IOException expected) { assertTrue(expected.getMessage().contains("Shell")); }
+    }
+
     @Test(timeout=25000) public void registersWithoutModelThenExistingClientChatsAndRuntimeClosePreservesConnection() throws Exception {
         until(() -> sdk.getState() == StarcoreClient.State.CONNECTED);
         configure();

@@ -133,6 +133,8 @@ public final class RemoteAcpManager implements AutoCloseable {
             String publicBase = remoteSettings == null ? null : remoteSettings.getString("publicMcpBaseUrl");
             if (publicBase == null || publicBase.trim().isEmpty()) publicBase = base.toString();
             Peer registered = new Peer(name, workspace, publicBase.replaceAll("/+$", ""), link);
+            registered.observationSupported = hello.has("observationVersion") && hello.get("observationVersion").getAsInt() == 1;
+            registered.observationAllowed = hello.has("observationAllowed") && hello.get("observationAllowed").getAsBoolean();
             registered.resourceSync = hello.has("resourceSyncVersion") && hello.get("resourceSyncVersion").getAsInt() == 1;
             registered.managedRoot = Wire.str(hello, "managedRoot");
             if (registered.resourceSync && (registered.managedRoot.isEmpty() || registered.managedRoot.length() > 4096)) throw new IOException("Invalid managed resource root");
@@ -189,6 +191,13 @@ public final class RemoteAcpManager implements AutoCloseable {
                         if (peer.resourcesReady) barrier.complete(null); else barrier.completeExceptionally(new IOException(peer.resourceError));
                     }
                     if (peer.resourcesReady && peer.needsRefresh) scheduleRefresh(peer);
+                }
+                else if (type.equals("observation_result")) {
+                    CompletableFuture<JsonObject> future = peer.observations.remove(Wire.str(f, "requestId"));
+                    if (future != null) {
+                        if (f.has("result") && f.get("result").isJsonObject()) future.complete(f.getAsJsonObject("result"));
+                        else future.completeExceptionally(new IOException("远端观测返回无效结果"));
+                    }
                 }
                 else if (type.equals("ping")) link.send(Wire.frame("pong", null));
                 else if (type.equals("config_ack")) {
@@ -342,6 +351,35 @@ public final class RemoteAcpManager implements AutoCloseable {
         String bypass = prior.isEmpty() ? host : prior + "," + host;
         env.addProperty("NO_PROXY", bypass); env.addProperty("no_proxy", bypass); return config;
     }
+    /** Uses the host connection only; never opens or wakes a model runtime. */
+    public JsonObject executeObservation(String name, String script) throws Exception {
+        com.mola.starweave.agent.NodeObservationRunner.validate(script);
+        Peer peer = peers.get(name);
+        if (peer == null || !peer.alive()) throw new IOException("远端离线，无法执行观测脚本");
+        if (!peer.observationSupported) throw new IOException("远端版本不支持观测执行，请升级远端程序");
+        if (!peer.observationAllowed) throw new IOException("远端宿主未开放 Shell 权限，无法执行观测脚本");
+        if (!peer.observationSlots.tryAcquire()) throw new IOException("远端观测请求繁忙，请稍后重试");
+        String requestId = UUID.randomUUID().toString();
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+        peer.observations.put(requestId, future);
+        try {
+            JsonObject request = Wire.frame("observation_execute", null);
+            request.addProperty("requestId", requestId); request.addProperty("script", script);
+            request.add("environment", peerConfig(robotFor(peer), peer).getAsJsonObject("environment"));
+            peer.link.send(request);
+            JsonObject result;
+            try { result = future.get(25, TimeUnit.SECONDS); }
+            catch (TimeoutException error) { throw new IOException("远端观测执行超时", error); }
+            catch (ExecutionException error) { throw new IOException("远端观测执行失败：" + error.getCause().getMessage(), error.getCause()); }
+            if (peers.get(name) != peer || !peer.alive()) throw new IOException("远端连接已替换，丢弃旧观测结果");
+            return result;
+        } finally {
+            peer.observations.remove(requestId, future);
+            peer.observationSlots.release();
+            JsonObject cancel = Wire.frame("observation_cancel", null); cancel.addProperty("requestId", requestId);
+            try { peer.link.send(cancel); } catch (IOException ignored) { }
+        }
+    }
     public static JsonObject runtimeConfig(AcpRobotParam robot) {
         EmbeddedPiConfig pi = robot.getEmbeddedPi(); JsonObject c = new JsonObject();
         c.addProperty("baseUrl", pi == null ? "https://api.deepseek.com" : pi.getBaseUrl()); c.addProperty("apiKey", pi == null ? "" : pi.getApiKey()); c.addProperty("model", robot.getModel());
@@ -402,6 +440,9 @@ public final class RemoteAcpManager implements AutoCloseable {
         final ConcurrentMap<String, StreamAcpTransport> runtimes = new ConcurrentHashMap<>();
         final ConcurrentMap<String, CompletableFuture<Void>> opening = new ConcurrentHashMap<>();
         final ConcurrentMap<String, CompletableFuture<String>> uploading = new ConcurrentHashMap<>();
+        final ConcurrentMap<String, CompletableFuture<JsonObject>> observations = new ConcurrentHashMap<>();
+        final Semaphore observationSlots = new Semaphore(4);
+        volatile boolean observationSupported, observationAllowed;
         final Set<String> prompts = ConcurrentHashMap.newKeySet(); final AtomicBoolean refreshing = new AtomicBoolean();
         final AtomicBoolean resourceBusy = new AtomicBoolean();
         volatile boolean resourceSync, resourcesReady; volatile String managedRoot = "", resourceVersion = "", resourceError = "", barrierId = "";
@@ -410,6 +451,6 @@ public final class RemoteAcpManager implements AutoCloseable {
         volatile long retryAfter; volatile long lastHeartbeat = System.nanoTime(); volatile boolean ready, needsRefresh; volatile String version = "", error = "";
         Peer(String name, String workspace, String base, FramedConnection link) { this.name = name; this.workspace = workspace; this.mcpBase = base; this.link = link; }
         boolean alive() { return link.isAlive() && System.nanoTime() - lastHeartbeat < TimeUnit.SECONDS.toNanos(30); }
-        void disconnect() { link.close(); if (resourceBarrier != null) resourceBarrier.completeExceptionally(new IOException("Remote ACP disconnected")); for (StreamAcpTransport r : runtimes.values()) r.fail("远程星核连接中断，当前执行已终止"); for (CompletableFuture<Void> f : opening.values()) f.completeExceptionally(new IOException("Remote ACP disconnected")); for (CompletableFuture<String> f : uploading.values()) f.completeExceptionally(new IOException("Remote ACP disconnected")); runtimes.clear(); opening.clear(); uploading.clear(); prompts.clear(); }
+        void disconnect() { link.close(); for (CompletableFuture<JsonObject> f : observations.values()) f.completeExceptionally(new IOException("远端连接中断")); observations.clear(); if (resourceBarrier != null) resourceBarrier.completeExceptionally(new IOException("Remote ACP disconnected")); for (StreamAcpTransport r : runtimes.values()) r.fail("远程星核连接中断，当前执行已终止"); for (CompletableFuture<Void> f : opening.values()) f.completeExceptionally(new IOException("Remote ACP disconnected")); for (CompletableFuture<String> f : uploading.values()) f.completeExceptionally(new IOException("Remote ACP disconnected")); runtimes.clear(); opening.clear(); uploading.clear(); prompts.clear(); }
     }
 }

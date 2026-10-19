@@ -27,6 +27,7 @@ public final class ObservationManager implements AutoCloseable {
         final Object token;
         final ScheduleOwnerKey owner;
         final Path workDir;
+        final String remoteAgent;
         final BooleanSupplier enabled;
         final Delivery delivery;
 
@@ -34,11 +35,13 @@ public final class ObservationManager implements AutoCloseable {
                 Object token,
                 ScheduleOwnerKey owner,
                 Path workDir,
+                String remoteAgent,
                 BooleanSupplier enabled,
                 Delivery delivery) {
             this.token = token;
             this.owner = owner;
             this.workDir = workDir;
+            this.remoteAgent = remoteAgent;
             this.enabled = enabled;
             this.delivery = delivery;
         }
@@ -108,10 +111,15 @@ public final class ObservationManager implements AutoCloseable {
             String workDir,
             BooleanSupplier enabled,
             Delivery delivery) {
+        register(token, owner, workDir, enabled, null, delivery);
+    }
+
+    public synchronized void register(Object token, ScheduleOwnerKey owner, String workDir,
+            BooleanSupplier enabled, String remoteAgent, Delivery delivery) {
         if (closed) return;
         targets.put(
                 owner.getPersistencePath(),
-                new Target(token, owner, Paths.get(workDir), enabled, delivery));
+                new Target(token, owner, remoteAgent == null ? Paths.get(workDir) : null, remoteAgent, enabled, delivery));
         if (!enabled.getAsBoolean()) {
             for (JsonObject channel : new ArrayList<>(channels.values())) {
                 if (!owner.getPersistencePath().equals(text(channel, "ownerPath"))) continue;
@@ -135,10 +143,15 @@ public final class ObservationManager implements AutoCloseable {
 
     public synchronized void registerConfigured(
             ScheduleOwnerKey owner, String workDir, BooleanSupplier enabled, Delivery delivery) {
+        registerConfigured(owner, workDir, enabled, null, delivery);
+    }
+
+    public synchronized void registerConfigured(ScheduleOwnerKey owner, String workDir,
+            BooleanSupplier enabled, String remoteAgent, Delivery delivery) {
         if (closed) return;
         configuredTargets.put(
                 owner.getPersistencePath(),
-                new Target(owner, owner, Paths.get(workDir), enabled, delivery));
+                new Target(owner, owner, remoteAgent == null ? Paths.get(workDir) : null, remoteAgent, enabled, delivery));
     }
 
     private Target target(String owner) {
@@ -232,7 +245,7 @@ public final class ObservationManager implements AutoCloseable {
         String id = text(snapshot, "id");
         try {
             long startedAt = System.currentTimeMillis();
-            JsonObject result = runner.execute(text(snapshot, "script"), target.workDir);
+            JsonObject result = execute(target, text(snapshot, "script"));
             synchronized (this) {
                 JsonObject current = channels.get(id);
                 if (closed
@@ -247,6 +260,7 @@ public final class ObservationManager implements AutoCloseable {
                 update.addProperty("lastRunAt", now);
                 update.addProperty("nextRunAt", next);
                 update.addProperty("lastDurationMillis", number(result, "durationMillis"));
+                update.addProperty("lastExecutionLocation", text(result, "executionLocation"));
                 JsonObject event = null;
                 if (bool(result, "success", false)) {
                     String value = text(result, "result");
@@ -494,7 +508,29 @@ public final class ObservationManager implements AutoCloseable {
                             ? text(input, "script")
                             : text(require(required(input, "channel_id"), owner), "script");
         }
-        return runner.execute(script, target.workDir);
+        return execute(target, script);
+    }
+
+    private static String executionLocation(Target target) {
+        return target.remoteAgent == null ? "本机" : "远端 · " + target.remoteAgent;
+    }
+
+    private JsonObject execute(Target target, String script) {
+        long started = System.currentTimeMillis();
+        JsonObject result;
+        try {
+            result = target.remoteAgent == null ? runner.execute(script, target.workDir)
+                    : com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.getInstance()
+                            .executeObservation(target.remoteAgent, script);
+        } catch (Exception error) {
+            if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+            result = new JsonObject();
+            result.addProperty("success", false);
+            result.addProperty("error", error.getMessage());
+            result.addProperty("durationMillis", System.currentTimeMillis() - started);
+        }
+        result.addProperty("executionLocation", executionLocation(target));
+        return result;
     }
 
     public synchronized JsonObject events(
@@ -593,6 +629,7 @@ public final class ObservationManager implements AutoCloseable {
         else if (!bool(copy, "enabled", true)) status = "PAUSED";
         else if (copy.has("lastError")) status = "ERROR";
         else status = "ACTIVE";
+        copy.addProperty("executionLocation", target == null ? text(copy, "lastExecutionLocation") : executionLocation(target));
         copy.addProperty("status", status);
         copy.addProperty("running", executing.contains(text(copy, "id")));
         if (!detail) {
@@ -717,6 +754,7 @@ public final class ObservationManager implements AutoCloseable {
                     + "创建通道必须填写 eventAction（事件处理指令），写明处理目标、判断条件及结果去向，使新会话无需旧聊天记录也能独立处理。修改时未提供此字段则保留原指令。\n"
                     + "事件保存产生时的处理指令快照，通知和重试均使用该快照；缺少指令的旧事件应向用户确认处理方式。\n"
                     + "测试脚本调用 test_observation_script。查询通道事件或事件完整明细，调用 query_observation_events。\n"
+                    + "观测脚本在所属智能体的执行环境运行；远程星核在远端宿主执行，文件路径和 localhost 均指向远端。\n"
                     + "观测脚本通过 module.exports 导出一个函数，支持异步执行，必须返回字符串；抛出异常表示观测失败。\n"
                     + "</observation>\n";
 

@@ -21,6 +21,10 @@ public final class StarcoreClient implements AutoCloseable {
     private final ConcurrentMap<String, Runtime> runtimes = new ConcurrentHashMap<>();
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "starcore-heartbeat"); t.setDaemon(true); return t; });
     private final ExecutorService lifecycle = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64), r -> { Thread t = new Thread(r, "starcore-runtime-lifecycle"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
+    private final ExecutorService observationWorkers = new ThreadPoolExecutor(0, 4, 30, TimeUnit.SECONDS,
+            new SynchronousQueue<>(), r -> { Thread t = new Thread(r, "starcore-observation"); t.setDaemon(true); return t; },
+            new ThreadPoolExecutor.AbortPolicy());
+    private final ConcurrentMap<String, FutureTask<Void>> observations = new ConcurrentHashMap<>();
     private volatile FramedConnection link;
     private volatile State state = State.CONNECTING;
     private volatile String lastError = "";
@@ -85,6 +89,8 @@ public final class StarcoreClient implements AutoCloseable {
                 FramedConnection connection = new FramedConnection(socket); link = connection; lastReceived = System.nanoTime();
                 JsonObject hello = Wire.frame("register", null); hello.addProperty("protocolVersion", Wire.VERSION);
                 hello.addProperty("name", options.name); hello.addProperty("identity", identity); hello.addProperty("workspace", options.workspace.toString());
+                hello.addProperty("observationVersion", 1);
+                hello.addProperty("observationAllowed", options.allowShell);
                 hello.addProperty("resourceSyncVersion", 1); hello.addProperty("managedRoot", resources.root().toString());
                 hello.addProperty("sdkVersion", "1.0.0"); hello.addProperty("platform", System.getProperty("os.name"));
                 hello.addProperty("starweaveUrl", options.url.toString());
@@ -92,7 +98,7 @@ public final class StarcoreClient implements AutoCloseable {
                 connection.send(hello);
                 while (!closed.get() && connection.isAlive()) { JsonObject f = connection.read(); lastReceived = System.nanoTime(); receive(connection, f); backoff = 1000; }
             } catch (Exception e) { lastError = "StarCore connection unavailable (" + e.getClass().getSimpleName() + ")"; }
-            finally { FramedConnection connection = link; link = null; if (connection != null) connection.close(); if (pendingSocket != null) try { pendingSocket.close(); } catch (IOException ignored) { } clearRuntimes(); if (!closed.get()) setState(State.CONNECTING); }
+            finally { FramedConnection connection = link; link = null; if (connection != null) connection.close(); if (pendingSocket != null) try { pendingSocket.close(); } catch (IOException ignored) { } clearObservations(); clearRuntimes(); if (!closed.get()) setState(State.CONNECTING); }
             synchronized (this) {
                 if (!closed.get()) try { wait(backoff + ThreadLocalRandom.current().nextLong(250)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
             }
@@ -118,6 +124,12 @@ public final class StarcoreClient implements AutoCloseable {
                 try { if (connection != link) return; resources.bind(Wire.str(f, "resourceSetId")); syncResources(); }
                 catch (IOException e) { lastError = "Resource set does not match local data directory"; connection.close(); }
             }); }
+            return;
+        }
+        if (type.equals("observation_execute")) { executeObservation(connection, f); return; }
+        if (type.equals("observation_cancel")) {
+            FutureTask<Void> task = observations.remove(Wire.str(f, "requestId"));
+            if (task != null) task.cancel(true);
             return;
         }
         if (type.equals("resources_poll")) { requestedBarrier.set(Wire.str(f, "barrier")); resourceWorker.execute(this::syncResources); return; }
@@ -179,6 +191,47 @@ public final class StarcoreClient implements AutoCloseable {
             if (r != null) try { lifecycle.execute(r.process::destroy); } catch (RejectedExecutionException e) { r.process.destroy(); }
         }
     }
+    private void executeObservation(FramedConnection connection, JsonObject request) throws IOException {
+        String requestId = Wire.str(request, "requestId");
+        if (requestId.isEmpty() || requestId.length() > 80) throw new IOException("Invalid observation request id");
+        if (!options.allowShell) {
+            sendObservation(connection, requestId, observationFailure("远端宿主未开放 Shell 权限，无法执行观测脚本"));
+            return;
+        }
+        FutureTask<Void> task = new FutureTask<Void>(() -> {
+            try {
+                if (connection != link || !connection.isAlive()) return null;
+                Map<String, String> environment = new HashMap<>();
+                if (request.has("environment")) for (Map.Entry<String, JsonElement> e : request.getAsJsonObject("environment").entrySet())
+                    environment.put(e.getKey(), e.getValue().getAsString());
+                JsonObject result = new NodeObservationRunner().execute(Wire.str(request, "script"), options.workspace, environment);
+                if (!Thread.currentThread().isInterrupted() && connection == link && connection.isAlive())
+                    sendObservation(connection, requestId, result);
+            } catch (RuntimeException error) {
+                sendObservation(connection, requestId, observationFailure("观测执行失败：" + error.getMessage()));
+            } finally { observations.remove(requestId); }
+            return null;
+        });
+        if (observations.putIfAbsent(requestId, task) != null) throw new IOException("Duplicate observation request");
+        try { observationWorkers.execute(task); }
+        catch (RejectedExecutionException error) {
+            observations.remove(requestId, task);
+            sendObservation(connection, requestId, observationFailure("远端观测执行繁忙，请稍后重试"));
+        }
+    }
+    private static JsonObject observationFailure(String error) {
+        JsonObject result = new JsonObject(); result.addProperty("success", false);
+        result.addProperty("error", error); result.addProperty("durationMillis", 0); return result;
+    }
+    private static void sendObservation(FramedConnection connection, String requestId, JsonObject result) {
+        JsonObject response = Wire.frame("observation_result", null);
+        response.addProperty("requestId", requestId); response.add("result", result);
+        try { connection.send(response); } catch (IOException ignored) { }
+    }
+    private void clearObservations() {
+        for (FutureTask<Void> task : observations.values()) task.cancel(true);
+        observations.clear();
+    }
     private AgentConfig config(JsonObject c) {
         Map<String, String> env = new HashMap<>(System.getenv());
         if (c.has("environment")) for (Map.Entry<String, JsonElement> e : c.getAsJsonObject("environment").entrySet()) env.put(e.getKey(), e.getValue().getAsString());
@@ -233,7 +286,7 @@ public final class StarcoreClient implements AutoCloseable {
     private void clearRuntimes() { for (Runtime r : runtimes.values()) r.process.destroy(); runtimes.clear(); }
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        FramedConnection c = link; if (c != null) c.close(); clearRuntimes(); timer.shutdownNow(); lifecycle.shutdownNow(); resourceWorker.shutdownNow();
+        FramedConnection c = link; if (c != null) c.close(); clearObservations(); observationWorkers.shutdownNow(); clearRuntimes(); timer.shutdownNow(); lifecycle.shutdownNow(); resourceWorker.shutdownNow();
         try { identityLock.release(); identityChannel.close(); } catch (IOException ignored) { }
         setState(State.CLOSED);
     }

@@ -210,3 +210,30 @@ test('expired or revoked login is checked again before the next write', async ()
     const waiting=win.fetch('/api/refresh?instance=remote-a',{method:'POST'});await new Promise(setImmediate);
     assert.equal(businessCalls,1);assert.ok(h.context.registryAccessPrompt);h.context.finishRegistryAccess(false);assert.equal((await waiting).status,401);
 });
+
+test('sequential reads reuse access checks per environment and recheck after expiry',async()=>{
+    const calls=[];let now=1000;
+    const win={location:{href:'https://center.example/',origin:'https://center.example'},fetch:async url=>{calls.push(url);return new Response(JSON.stringify({authenticated:true,expiresAt:100000}),{status:200});}};
+    const h=harness(()=>{}, {window:win,Date:{now:()=>now}});
+    await win.fetch('/api/config?instance=remote-a');await win.fetch('/api/channels/status?instance=remote-a');
+    assert.equal(calls.filter(x=>x.startsWith('/api/registry/access')).length,1);
+    await win.fetch('/api/config?instance=remote-b');assert.equal(calls.filter(x=>x.startsWith('/api/registry/access')).length,2);
+    now+=30001;await win.fetch('/api/config?instance=remote-a');assert.equal(calls.filter(x=>x.startsWith('/api/registry/access')).length,3);
+    assert.equal(h.context.registryAccessVerifiedUntil['remote-b'],31000);
+});
+test('server rejection invalidates cached access without replaying business requests',async()=>{
+    let checks=0,business=0,rejected=false;
+    const win={location:{href:'https://center.example/',origin:'https://center.example'},fetch:async url=>{
+        if(url.startsWith('/api/registry/access')){checks++;return new Response('{"authenticated":true}');}
+        business++;return new Response('{}',{status:rejected?401:200});
+    }};
+    harness(()=>{}, {window:win});await win.fetch('/api/config?instance=remote-a');rejected=true;
+    assert.equal((await win.fetch('/api/config?instance=remote-a')).status,401);assert.equal(business,2);assert.equal(checks,1);
+    rejected=false;await win.fetch('/api/config?instance=remote-a');assert.equal(checks,2);assert.equal(business,3);
+});
+test('access cache never extends beyond the server ticket expiry',async()=>{
+    let now=1000,checks=0;
+    const win={location:{href:'https://center.example/',origin:'https://center.example'},fetch:async url=>{if(url.startsWith('/api/registry/access'))checks++;return new Response('{"authenticated":true,"expiresAt":2000}');}};
+    harness(()=>{}, {window:win,Date:{now:()=>now}});await win.fetch('/api/config?instance=remote-a');
+    now=2001;await win.fetch('/api/config?instance=remote-a');assert.equal(checks,2);
+});

@@ -56,9 +56,10 @@ async function run() {
                 await page.evaluate(success => {
                     const long = ('测试长内容 ' + 'x'.repeat(400) + '\n').repeat(120);
                     document.getElementById('observationOwner').value = 'fixture';
-                    observationApi = async () => ({success, result: long, error: long, logs: long, durationMillis: 12});
+                    observationApi = async () => ({success, result: long, error: long, logs: long, durationMillis: 12, executionLocation: '远端 · test-remote'});
                     return testObservationDraft();
                 }, success);
+                assert.equal(await page.locator('#observationTestDuration').textContent(), '12 ms · 远端 · test-remote');
                 await page.locator('#observationTestLogsWrap summary').click();
                 for (const selector of ['#observationScript', '#observationTestResult', '#observationTestLogsWrap']) {
                     const metrics = await page.locator(selector).evaluate(node => {
@@ -79,6 +80,21 @@ async function run() {
             assert.ok(actionScroll > 0);
             const fits = await page.locator('#observationEditorDialog .dialog').evaluate(node => node.scrollWidth <= node.clientWidth + 1);
             assert.ok(fits);
+            await page.evaluate(() => {
+                closeDialog('observationEditorDialog');
+                document.querySelectorAll('.page-section').forEach(node => node.classList.remove('active'));
+                document.getElementById('page-observations').classList.add('active');
+                const channel = {id: 'remote-channel', name: '远端文件', owner: {name: 'test-remote'},
+                    frequency: '30s', status: 'ACTIVE', enabled: true, script: "module.exports=()=> 'ok'",
+                    executionLocation: '远端 · test-remote', lastExecutionLocation: '远端 · test-remote'};
+                observationState.items = [channel];
+                renderObservations();
+                observationApi = async () => channel;
+            });
+            assert.equal(await page.locator('.observation-execution').isVisible(), true);
+            assert.equal(await page.locator('.observation-execution').textContent(), '远端 · test-remote');
+            await page.locator('.observation-name').click();
+            assert.ok((await page.locator('#observationDetailBody').textContent()).includes('执行位置：远端 · test-remote'));
             assert.deepEqual(errors, []);
             console.log(`PASS observation editor: ${width}px ${theme}, script placement, mobile tabs, long script / instruction / result / error / logs`);
             await page.close();

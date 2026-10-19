@@ -1566,7 +1566,7 @@ object AcpProxy {
                 configuredRobotRegistry[robot.name]?.let {
                     it.isEnabled && it.isObservationEnabled && !it.isOnlySubAgent && !it.isOnlyTeamMember
                 } ?: false
-            }) { prompt ->
+            }, if (robot.agentProvider == com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.PROVIDER) robot.name else null) { prompt ->
                 if (registry.getClient(identity.logicalId) == null) {
                     checkNotNull(starweaveSessionManager).open(robot.name)
                 }

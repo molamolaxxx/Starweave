@@ -216,3 +216,54 @@ test('team history, context and session-list POST queries do not lock the enviro
     assert.equal((await h.context.api('/api/starweave/v1/teams/member',{method:'POST',body:'{"action":"history"}'})).status,200);
     await assert.rejects(h.context.api('/api/starweave/v1/teams/member',{method:'POST',body:'{"action":"send"}'}),/环境状态待确认/);
 });
+
+function loadingHarness(page='acp') {
+    const calls=[],timers=[],waits={};
+    const names=['loadChannelStatus','loadItemRefreshStatus','loadTeamSharingStatus','loadChannelBindingTargets','loadMcpAuth','loadRegistrySettings','loadStarweaveSessions','loadStarweaveTeams','loadTaskCount','loadScheduleCount','loadObservationCount'];
+    const extra={activePage:page,clearDirty(){},render(){calls.push('render');},normalizeChannelOutboundTargets(){}};
+    for(const name of names)extra[name]=()=>{calls.push(name);return waits[name]?.promise||Promise.resolve();};
+    const h=harness(extra);
+    vm.runInContext(section('async function loadConfig(', 'async function loadChannelStatus('),h.context);
+    h.context.environmentGate.switching=true;h.context.environmentGate.loading=true;
+    h.context.setTimeout=fn=>{timers.push(fn);return timers.length;};
+    return {...h,calls,timers,waits};
+}
+test('configuration loads independent page data concurrently and leaves unrelated queries outside the switch lock',async()=>{
+    const h=loadingHarness();
+    h.waits.loadChannelStatus=deferred();h.waits.loadItemRefreshStatus=deferred();h.waits.loadTeamSharingStatus=deferred();
+    const loading=h.context.loadConfig({robots:[],channels:[]});
+    assert.deepEqual(h.calls,['loadChannelStatus','loadItemRefreshStatus','loadTeamSharingStatus']);
+    h.waits.loadChannelStatus.resolve();h.waits.loadItemRefreshStatus.resolve();
+    await new Promise(setImmediate);assert.ok(!h.calls.includes('render'));
+    h.waits.loadTeamSharingStatus.resolve();await loading;
+    assert.equal(h.calls.at(-1),'render');assert.equal(h.timers.length,0);
+    assert.ok(!h.calls.includes('loadChannelBindingTargets'));assert.ok(!h.calls.includes('loadMcpAuth'));
+    h.context.environmentGate.switching=false;h.context.environmentGate.loading=false;
+    h.context.flushEnvironmentBackgroundLoads();h.timers[0]();await new Promise(setImmediate);
+    for(const name of ['loadTaskCount','loadScheduleCount','loadObservationCount','loadStarweaveSessions','loadStarweaveTeams'])assert.ok(h.calls.includes(name));
+});
+test('each page awaits its required data and avoids redundant background list reads',async()=>{
+    for(const [page,names] of [['channels',['loadChannelBindingTargets']],['mcp-auth',['loadMcpAuth']],['basic',['loadRegistrySettings']],['sessions',['loadStarweaveSessions']],['teams',['loadStarweaveSessions','loadStarweaveTeams']]]){
+        const h=loadingHarness(page);h.waits[names[0]]=deferred();
+        const loading=h.context.loadConfig({robots:[],channels:[]});
+        for(const name of names)assert.ok(h.calls.includes(name));
+        assert.ok(!h.calls.includes('render'));h.waits[names[0]].resolve();await loading;
+        h.context.environmentGate.switching=false;h.context.flushEnvironmentBackgroundLoads();h.timers[0]();await new Promise(setImmediate);
+        for(const name of names)assert.equal(h.calls.filter(x=>x===name).length,1);
+    }
+});
+test('deferred sidebar reads are discarded after a new environment version or failed recovery',async()=>{
+    for(const invalidate of [h=>h.context.environmentGate.version++,h=>h.context.environmentGate.recoveryRequired=true,h=>h.context.environmentGate.switching=true]){
+        const h=loadingHarness();await h.context.loadConfig({robots:[],channels:[]});
+        h.context.environmentGate.switching=false;h.context.flushEnvironmentBackgroundLoads();invalidate(h);h.timers[0]();await new Promise(setImmediate);
+        assert.ok(!h.calls.includes('loadTaskCount'));assert.ok(!h.calls.includes('loadStarweaveSessions'));
+    }
+});
+test('unrelated list failures do not fail switching while the visible session page remains required',async()=>{
+    const h=harness({fetch:async()=>new Response('{}',{status:503})});
+    vm.runInContext(section('async function api(', 'function envName('),h.context);
+    h.context.environmentGate.switching=true;h.context.environmentGate.loading=true;
+    await h.context.api('/api/starweave/v1/sessions');assert.equal(h.context.environmentGate.loadErrors.length,0);
+    h.context.activePage='sessions';await assert.rejects(h.context.api('/api/starweave/v1/sessions'),/加载失败/);
+    assert.equal(h.context.environmentGate.loadErrors.length,1);assert.equal(h.context.environmentGate.recoveryRequired,false);
+});

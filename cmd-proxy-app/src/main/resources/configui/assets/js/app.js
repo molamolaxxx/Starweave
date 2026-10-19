@@ -4,8 +4,7 @@ installChatRecoveryListeners();
 restoreSidebarState();
 await loadInstances(false);
 await loadConfig();
-var savedPage='basic';try{savedPage=sessionStorage.getItem('configui-page')||'basic'}catch(e){}
-switchPage(savedPage);
+switchPage('sessions');
 setInterval(function(){if(!environmentGate.switching){refreshChannelStatuses();refreshRemoteAcpStatuses()}},5000);
 setInterval(function(){if(environmentGate.switching)return;loadInstances(false);if(activePage==='basic'&&!registryBusy)loadRegistrySettings(false)},5000);
 setInterval(function(){if(!environmentGate.switching){loadItemRefreshStatus(true);syncEnvironmentGate()}},1000);

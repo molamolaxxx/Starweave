@@ -62,7 +62,7 @@ const server = http.createServer((request, response) => {
       await page.goto('http://127.0.0.1:' + server.address().port);
       await page.addScriptTag({content: core});
       await page.evaluate(() => {
-        ['closeStarweaveStream', 'loadStarweaveSessions', 'loadStarweaveTeams', 'loadTasks', 'loadSchedules', 'refreshChannelBindingTargets', 'loadAgentGatewayRuntime', 'loadObservations', 'syncStarweaveViewport'].forEach(name => window[name] = function () {});
+        ['loadRegistrySettings', 'closeStarweaveStream', 'loadStarweaveSessions', 'loadStarweaveTeams', 'loadTasks', 'loadSchedules', 'refreshChannelBindingTargets', 'loadAgentGatewayRuntime', 'loadObservations', 'syncStarweaveViewport'].forEach(name => window[name] = function () {});
         const navigate = window.switchPage;
         window.navigationCalls = [];
         window.switchPage = function (page) {navigationCalls.push(page); navigate(page);};
@@ -114,6 +114,8 @@ const server = http.createServer((request, response) => {
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       assert.equal(await page.inputValue('#starweaveMobileServer'), 'https://starweave.example.com/path/');
       assert.equal(await page.evaluate(() => nativeMessages.filter(m => m.type === 'starweave-theme').at(-1).theme), 'light');
+      await page.locator('.nav-item[data-page="basic"]').click();
+      await page.evaluate(() => {navigationCalls = [];});
       const rows = await page.evaluate(() => {
         const proxy = document.getElementById('globalProxy').closest('.toggle-row');
         const address = document.getElementById('starweaveMobileSettings');

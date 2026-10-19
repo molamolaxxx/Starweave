@@ -55,7 +55,7 @@ reads.push('loadObservations','loadObservationCount','loadObservationEvents','op
 reads.forEach(function(name){var original=window[name];if(typeof original!=='function')return;window[name]=function(){if(environmentGate.switching&&!environmentGate.loading)return Promise.resolve(false);var args=arguments,owner=this;var pending=Promise.resolve().then(function(){return original.apply(owner,args)});environmentGate.reads.add(pending);return pending.finally(function(){environmentGate.reads.delete(pending)})}});
 }
 var dirty=false;
-var activePage='basic';
+var activePage='sessions';
 var externalChannelTab='wecom';
 var listState={robot:{page:1,pageSize:5},channel:{page:1,pageSize:5},externalTaskApi:{page:1,pageSize:5}};
 var starSessions={items:[],selectedGroupId:'',events:[],lastSeq:0,polling:false,stream:null,streamKey:'',uploads:[],followOutput:true,transitioning:false,transitionId:0,snapshotToken:0};
@@ -94,7 +94,7 @@ else{updateSidebarToggle(true,true);sidebarTransitionTimer=setTimeout(function()
 function restoreSidebarState(){var collapsed=false;try{collapsed=localStorage.getItem('starweave-sidebar-collapsed')==='1'}catch(e){}setSidebarCollapsed(collapsed)}
 
 function switchPage(page){
-if(['basic','channels','acp','sessions','teams','tasks','schedules','observations','mcp-auth'].indexOf(page)<0)page='basic';
+if(['basic','channels','acp','sessions','teams','tasks','schedules','observations','mcp-auth'].indexOf(page)<0)page='sessions';
 activePage=page;
 document.body.classList.toggle('sessions-active',page==='sessions');
 document.querySelectorAll('.page-section').forEach(function(el){el.classList.toggle('active',el.id==='page-'+page)});
@@ -104,6 +104,8 @@ try{sessionStorage.setItem('configui-page',page)}catch(e){}
 if(page==='sessions'){syncStarweaveViewport();loadStarweaveSessions(false)}else closeStarweaveStream();if(page==='teams'){loadStarweaveSessions(false);loadStarweaveTeams(false)}if(page==='tasks')loadTasks(false);if(page==='schedules')loadSchedules(false);if(page==='channels')refreshChannelBindingTargets(true);if(page==='channels'&&externalChannelTab==='gateway')loadAgentGatewayRuntime();
 window.scrollTo({top:0,behavior:page==='sessions'?'auto':'smooth'});
 if(page==='observations')loadObservations(false);
+if(page==='mcp-auth')loadMcpAuth();if(page==='basic')loadRegistrySettings(true);
+if(page==='acp')loadTeamSharingStatus().then(renderRobots);
 }
 
 function switchExternalChannelTab(tab){
@@ -241,7 +243,9 @@ if(!local&&curInstance&&curInstance.instanceId&&!/[?&]instance=/.test(path)){
 url+=(path.indexOf('?')>=0?'&':'?')+'instance='+encodeURIComponent(curInstance.instanceId);
 }
 var required=environmentGate.switching&&environmentGate.loading&&(
-['/api/starweave/v1/sessions','/api/starweave/v1/teams','/api/item-refresh-status','/api/channels/status'].indexOf(path)>=0||
+['/api/item-refresh-status','/api/channels/status'].indexOf(path)>=0||
+((activePage==='sessions'||activePage==='teams')&&path==='/api/starweave/v1/sessions')||
+(activePage==='teams'&&path==='/api/starweave/v1/teams')||
 (activePage==='tasks'&&path.indexOf('/api/starweave/v1/tasks')===0)||
 (activePage==='schedules'&&path.indexOf('/api/schedules/v1')===0)||
 (activePage==='observations'&&path.indexOf('/api/observations/v1')===0)||
@@ -356,6 +360,7 @@ taskState={items:[],stats:{},page:1,pageSize:10,total:0,totalPages:1,status:'',q
 taskEditor={mode:'create',task:null,originalContent:'',contentAttachments:[],commentAttachments:[],targets:{agents:[],teams:[]},history:[],historyNext:null,comments:[],commentsNext:null,editorMode:'edit'};
 channelBindingTargetRequest+=1;channelBindingTargets={instanceId:id,sessions:[],teams:[]};
 curInstance=target;
+teamSharingRuntime={instanceId:id,grants:[]};mcpAuthRuntime={servers:[],principals:[]};
 channelRuntime={instanceId:id,statuses:{},errors:{}};itemRefreshRuntime={robots:{},channels:{}};itemToggleRuntime={robots:{},channels:{}};
 committed=true;environmentGate.loading=true;environmentGate.loadErrors=[];
 await loadConfig(nextConfig);
@@ -374,7 +379,17 @@ starSessions=previousState.starSessions;starTeams=previousState.starTeams;teamSe
 observationState=previousState.observationState;resetObservationTokens();
 environmentGate.loading=true;environmentGate.loadErrors=[];await loadConfig(previousConfig);dirty=previousDirty;if(activePage==='tasks')await loadTasks(false);if(activePage==='schedules')await loadSchedules(false);if(activePage==='observations')await loadObservations(false);environmentGate.recoveryRequired=environmentGate.loadErrors.length>0;
 }showSnackbar('切换到 '+envName(target)+' 失败，仍在原环境：'+(e.name==='AbortError'?'连接超时':e.message))}
-finally{environmentGate.loading=false;environmentGate.switching=false;environmentGate.target=null;renderEnvTabs();syncEnvironmentGate();document.getElementById('envTrigger').focus()}
+finally{environmentGate.loading=false;environmentGate.switching=false;environmentGate.target=null;renderEnvTabs();syncEnvironmentGate();document.getElementById('envTrigger').focus();flushEnvironmentBackgroundLoads()}
+}
+
+var environmentBackgroundLoad=null;
+function flushEnvironmentBackgroundLoads(){
+var pending=environmentBackgroundLoad;environmentBackgroundLoad=null;
+if(!pending||environmentGate.recoveryRequired)return;
+setTimeout(function(){
+if(pending.version!==environmentGate.version||environmentGate.switching||environmentGate.recoveryRequired)return;
+Promise.allSettled(pending.jobs.map(function(job){return Promise.resolve().then(job)}));
+},0);
 }
 
 async function loadConfig(prefetched){
@@ -389,17 +404,25 @@ if(!config.agentGateways)config.agentGateways=[];
 if(!config.agentGatewayServer)config.agentGatewayServer={enabled:false,bindHost:'127.0.0.1',port:10529,maxConnections:100,eventRetentionDays:7};
 if(!config.configUi)config.configUi={enabled:true,port:currentPort()};
 }catch(e){showSnackbar('加载失败:'+e.message)}
-await loadChannelStatus();
-await loadItemRefreshStatus(false);
-await loadTeamSharingStatus();
-await loadChannelBindingTargets();
-await loadMcpAuth();
+// 当前页面的数据并行读取；其它页面不占用切换锁。
+var foreground=[loadChannelStatus(),loadItemRefreshStatus(false),loadTeamSharingStatus()];
+if(activePage==='channels')foreground.push(loadChannelBindingTargets());
+if(activePage==='mcp-auth')foreground.push(loadMcpAuth());
+if(activePage==='basic')foreground.push(loadRegistrySettings(true));
+if(activePage==='sessions'||activePage==='teams')foreground.push(loadStarweaveSessions(false));
+if(activePage==='teams')foreground.push(loadStarweaveTeams(false));
+await Promise.all(foreground);
 clearDirty();
 render();
-await loadRegistrySettings(true);
-await Promise.all([loadStarweaveSessions(false),loadStarweaveTeams(false),loadTaskCount()]);
-await loadScheduleCount();
-await loadObservationCount();
+var background=[loadTaskCount,loadScheduleCount,loadObservationCount];
+if(activePage!=='sessions'&&activePage!=='teams')background.push(function(){return loadStarweaveSessions(false)});
+if(activePage!=='teams')background.push(function(){return loadStarweaveTeams(false)});
+var pendingCounts=['taskCount','scheduleCount','observationCount'];
+if(activePage!=='sessions'&&activePage!=='teams')pendingCounts.push('sessionCount');
+if(activePage!=='teams')pendingCounts.push('teamCount');
+pendingCounts.forEach(function(id){var node=document.getElementById(id);if(node)node.textContent='…'});
+environmentBackgroundLoad={version:environmentGate.version,jobs:background};
+if(!environmentGate.switching)flushEnvironmentBackgroundLoads();
 }
 
 async function loadChannelStatus(){

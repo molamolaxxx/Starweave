@@ -25,7 +25,8 @@ public class StarweaveTaskUiContractTest {
         assertTrue(html.contains("var taskStatuses=['START','IN_PROGRESS','COMPLETED','CANCELLED','SUSPENDED']"));
         assertTrue(html.contains("function taskStatsQuery()"));
         assertTrue(html.contains("async function loadTaskCount()"));
-        assertTrue(html.contains("loadStarweaveTeams(false),loadTaskCount()"));
+        assertTrue(html.contains("var background=[loadTaskCount,loadScheduleCount,loadObservationCount]"));
+        assertTrue(html.contains("if(activePage!=='teams')background.push(function(){return loadStarweaveTeams(false)})"));
         assertTrue(html.contains("function appendTaskAssigneeParams(params)"));
         assertTrue(html.contains("filter.assigneeInstanceId=instanceId"));
         assertFalse(html.contains("params.push('assignee='+encodeURIComponent(taskState.assignee))"));

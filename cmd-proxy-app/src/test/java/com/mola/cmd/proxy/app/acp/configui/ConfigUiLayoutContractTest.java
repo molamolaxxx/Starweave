@@ -461,7 +461,8 @@ public class ConfigUiLayoutContractTest {
         assertTrue(html.contains("layout.classList.add('sidebar-collapsed');layout.classList.remove('sidebar-fading')"));
         assertTrue(html.contains("transition:grid-template-columns .28s ease"));
         assertTrue(html.contains("starweave-sidebar-collapsed"));
-        assertTrue(html.contains("await Promise.all([loadStarweaveSessions(false),loadStarweaveTeams(false),loadTaskCount()])"));
+        assertTrue(html.contains("var background=[loadTaskCount,loadScheduleCount,loadObservationCount]"));
+        assertTrue(html.contains("function flushEnvironmentBackgroundLoads()"));
         assertTrue(html.contains("document.getElementById('sessionCount').textContent='0'"));
         assertTrue(html.contains("document.getElementById('teamCount').textContent='0'"));
     }
