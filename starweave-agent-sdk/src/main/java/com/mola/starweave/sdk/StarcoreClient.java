@@ -3,6 +3,8 @@ package com.mola.starweave.sdk;
 import com.google.gson.*;
 import com.mola.starweave.agent.*;
 import com.mola.starweave.sdk.sync.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.*;
 import java.net.*;
 import java.nio.channels.*;
@@ -15,6 +17,7 @@ import java.util.function.Consumer;
 
 /** Java 8 embedded StarCore connector. No business-side prompt API. */
 public final class StarcoreClient implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(StarcoreClient.class);
     public enum State { CONNECTING, CONNECTED, READY, CLOSED }
     private final Builder options;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -122,7 +125,7 @@ public final class StarcoreClient implements AutoCloseable {
             resourceSyncSupported = f.has("resourceSyncVersion") && f.get("resourceSyncVersion").getAsInt() == 1;
             if (resourceSyncSupported) { resourceWorker.execute(() -> {
                 try { if (connection != link) return; resources.bind(Wire.str(f, "resourceSetId")); syncResources(); }
-                catch (IOException e) { lastError = "Resource set does not match local data directory"; connection.close(); }
+                catch (IOException e) { logResourceSyncFailure("bind-resource-set", e); lastError = "Resource set does not match local data directory"; connection.close(); }
             }); }
             return;
         }
@@ -142,7 +145,7 @@ public final class StarcoreClient implements AutoCloseable {
                     resourcesReady = true; lastError = ""; ack.addProperty("ready", true); ack.addProperty("conflicts", resources.conflictCount()); ack.addProperty("version", Wire.str(f, "version"));
                     ack.addProperty("managedRoot", resources.root().toString());
                     if (modelReady) setState(State.READY);
-                } catch (IOException | RuntimeException e) { resourcesReady = false; lastError = "Resource synchronization failed: " + e.getClass().getSimpleName(); ack.addProperty("ready", false); ack.addProperty("error", lastError); }
+                } catch (IOException | RuntimeException e) { logResourceSyncFailure("apply-response", e); resourcesReady = false; lastError = "Resource synchronization failed: " + e.getClass().getSimpleName(); ack.addProperty("ready", false); ack.addProperty("error", lastError); }
                 finally { pendingResourceRequest = ""; }
                 try { connection.send(ack); } catch (IOException ignored) { }
                 if (!requestedBarrier.get().isEmpty()) syncResources();
@@ -273,10 +276,17 @@ public final class StarcoreClient implements AutoCloseable {
             JsonObject request = resources.request(); request.addProperty("barrier", requestedBarrier.getAndSet(""));
             pendingResourceRequest = Wire.str(request, "requestId"); resourceRequestAt = System.nanoTime(); connection.send(request);
         } catch (IOException | RuntimeException e) {
+            logResourceSyncFailure("scan-or-send-request", e);
             pendingResourceRequest = ""; resourcesReady = false; lastError = "Resource synchronization failed: " + e.getClass().getSimpleName();
             JsonObject ack = Wire.frame("resources_ack", null); ack.addProperty("ready", false); ack.addProperty("error", lastError); ack.addProperty("barrier", requestedBarrier.getAndSet(""));
             try { connection.send(ack); } catch (IOException ignored) { }
         }
+    }
+    private void logResourceSyncFailure(String stage, Exception e) {
+        LOG.warn("Starcore resource sync failed; stage=" + stage
+                + "; agent=" + options.name
+                + "; workspace=" + options.workspace
+                + "; dataDirectory=" + options.dataDirectory, e);
     }
     private void heartbeat() {
         FramedConnection connection = link; if (connection == null) return;

@@ -175,7 +175,7 @@ public final class RemoteAcpManager implements AutoCloseable {
                         try {
                             if (peers.get(owner.name) != owner || !owner.alive()) return;
                             response = new RemoteResources(robotFor(owner)).exchange(f);
-                        } catch (Exception e) { response = new JsonObject(); response.addProperty("error", "资源同步失败：" + e.getClass().getSimpleName()); }
+                        } catch (Exception e) { org.slf4j.LoggerFactory.getLogger(RemoteAcpManager.class).warn("Remote resource exchange failed: name=" + owner.name, e); response = new JsonObject(); response.addProperty("error", "资源同步失败：" + e.getClass().getSimpleName()); }
                         finally { owner.resourceBusy.set(false); }
                         response.addProperty("type", "resources_response"); response.add("requestId", f.get("requestId")); response.addProperty("barrier", Wire.str(f, "barrier"));
                         try { owner.link.send(response); } catch (IOException ignored) { }
