@@ -82,11 +82,13 @@ public final class RemoteResources {
     private String indexHash() throws IOException { Path index = Paths.get(store.getIndexPath(robot.getWorkDir())); return Files.exists(index) ? ResourceFiles.hash(Files.readAllBytes(index)) : ""; }
     private void refreshCentralMemoryIndex(Path skills) throws IOException {
         if (!memory.isReadEnabled()) return;
+        // Recover an interrupted detail/index migration before scanning resource files.
+        com.mola.cmd.proxy.app.acp.memory.model.MemoryIndex index = store.loadIndex(robot.getWorkDir());
         Path state = skills.getParent().resolve("memory-indexed.json"); boolean initialized = Files.exists(state);
         JsonObject saved = initialized ? JsonParser.parseString(new String(Files.readAllBytes(state), StandardCharsets.UTF_8)).getAsJsonObject() : new JsonObject();
         JsonObject before = ResourceFiles.object(saved, "files"), now = memoryHashes();
         boolean indexUnchanged = initialized && ResourceFiles.str(saved, "indexHash").equals(indexHash());
-        Set<String> indexed = new HashSet<>(); for (com.mola.cmd.proxy.app.acp.memory.model.MemoryEntry e : store.loadIndex(robot.getWorkDir()).getMemories()) if (e.getFile() != null) indexed.add("memory/" + Paths.get(e.getFile()).getFileName());
+        Set<String> indexed = new HashSet<>(); for (com.mola.cmd.proxy.app.acp.memory.model.MemoryEntry e : index.getMemories()) if (e.getFile() != null) indexed.add("memory/" + Paths.get(e.getFile()).getFileName());
         Set<String> candidates = new TreeSet<>(now.keySet()); candidates.addAll(before.keySet()); Map<String, byte[]> changed = new LinkedHashMap<>();
         for (String key : candidates) if (!indexed.contains(key) && now.has(key) || indexUnchanged && !ResourceFiles.str(before, key).equals(ResourceFiles.str(now, key))) {
             Path target = ResourceFiles.resolve(memoryScope.resolve("memories"), key.substring(7)); changed.put(key.substring(7), Files.exists(target) ? Files.readAllBytes(target) : null);

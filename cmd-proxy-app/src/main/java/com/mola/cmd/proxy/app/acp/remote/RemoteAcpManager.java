@@ -33,6 +33,7 @@ public final class RemoteAcpManager implements AutoCloseable {
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "remote-acp-heartbeat"); t.setDaemon(true); return t; });
     private final ExecutorService resourceWorkers = new ThreadPoolExecutor(1, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64), r -> { Thread t = new Thread(r, "remote-resource-sync"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
     private final RemoteMcpProxy mcpProxy = new RemoteMcpProxy();
+    private final ExecutorService sessionWorkers = new ThreadPoolExecutor(1, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32), r -> { Thread t = new Thread(r, "remote-session-sync"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
     public void handleMcp(com.sun.net.httpserver.HttpExchange exchange) { mcpProxy.handle(exchange); }
     private volatile ServerSocket listener;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -136,6 +137,7 @@ public final class RemoteAcpManager implements AutoCloseable {
             registered.observationSupported = hello.has("observationVersion") && hello.get("observationVersion").getAsInt() == 1;
             registered.observationAllowed = hello.has("observationAllowed") && hello.get("observationAllowed").getAsBoolean();
             registered.resourceSync = hello.has("resourceSyncVersion") && hello.get("resourceSyncVersion").getAsInt() == 1;
+            registered.sessionSync = hello.has("sessionSyncVersion") && hello.get("sessionSyncVersion").getAsInt() == 1;
             registered.managedRoot = Wire.str(hello, "managedRoot");
             if (registered.resourceSync && (registered.managedRoot.isEmpty() || registered.managedRoot.length() > 4096)) throw new IOException("Invalid managed resource root");
             AtomicReference<Peer> replaced = new AtomicReference<>();
@@ -157,6 +159,10 @@ public final class RemoteAcpManager implements AutoCloseable {
             }, () -> { registeredNames.add(name); replaced.set(peers.put(name, registered)); });
             peer = registered; if (replaced.get() != null) replaced.get().disconnect();
             JsonObject registration = Wire.frame("registered", null);
+            if (peer.sessionSync) {
+                registration.addProperty("sessionSyncVersion", 1);
+                registration.addProperty("resourceSetId", new RemoteResources(robotFor(peer)).resourceSetId());
+            }
             if (peer.resourceSync) {
                 registration.addProperty("resourceSyncVersion", 1);
                 registration.addProperty("resourceSetId", new RemoteResources(robotFor(peer)).resourceSetId());
@@ -167,7 +173,40 @@ public final class RemoteAcpManager implements AutoCloseable {
                 if (!peer.alive()) throw new IOException("Remote ACP lease expired");
                 peer.lastHeartbeat = System.nanoTime();
                 String type = Wire.str(f, "type"), id = Wire.str(f, "runtimeId");
-                if (type.equals("resources_request") && peer.resourceSync) {
+                if (type.equals("sessions_request") && peer.sessionSync) {
+                    Peer owner = peer;
+                    if (!owner.sessionBusy.compareAndSet(false, true)) throw new IOException("Session request already pending");
+                    Runnable exchange = () -> {
+                        JsonObject response;
+                        try {
+                            if (peers.get(owner.name) != owner || !owner.alive()) return;
+                            Path root = RemoteResources.skillRoot(robotFor(owner)).getParent().resolve("sessions");
+                            java.util.concurrent.locks.ReentrantLock lock = com.mola.cmd.proxy.app.acp.memory.MemoryScopeLockRegistry.lockForStoragePath(root);
+                            lock.lock();
+                            try {
+                                if (peers.get(owner.name) != owner || !owner.alive()) return;
+                                response = new com.mola.starweave.sdk.sync.SessionAuthority(root).exchange(f);
+                            } finally { lock.unlock(); }
+                            owner.sessionError = Wire.str(response, "error");
+                            if (owner.sessionError.isEmpty()) owner.lastSessionSync = System.currentTimeMillis();
+                        } catch (Exception e) {
+                            org.slf4j.LoggerFactory.getLogger(RemoteAcpManager.class).warn("Remote session exchange failed: name=" + owner.name, e);
+                            response = new JsonObject(); response.addProperty("error", e instanceof IOException ? e.getMessage() : "会话同步失败"); owner.sessionError = Wire.str(response, "error");
+                        } finally { owner.sessionBusy.set(false); }
+                        response.addProperty("type", "sessions_response"); response.addProperty("requestId", Wire.str(f, "requestId"));
+                        try { owner.link.send(response); } catch (IOException ignored) { }
+                    };
+                    try { sessionWorkers.execute(exchange); }
+                    catch (RejectedExecutionException e) {
+                        owner.sessionBusy.set(false); JsonObject response = Wire.frame("sessions_response", null);
+                        response.addProperty("requestId", Wire.str(f, "requestId")); response.addProperty("error", "会话同步队列已满，请重试"); owner.link.send(response);
+                    }
+                }
+                else if (type.equals("sessions_status") && peer.sessionSync) {
+                    peer.sessionError = Wire.str(f, "error");
+                    if (peer.sessionError.isEmpty()) peer.lastSessionSync = System.currentTimeMillis();
+                }
+                else if (type.equals("resources_request") && peer.resourceSync) {
                     Peer owner = peer;
                     if (!owner.resourceBusy.compareAndSet(false, true)) throw new IOException("Resource request already pending");
                     try { resourceWorkers.execute(() -> {
@@ -422,7 +461,8 @@ public final class RemoteAcpManager implements AutoCloseable {
             Peer p = peers.get(r.getString("name")); boolean alive = p != null && p.alive(); r.put("enabled", alive);
             JSONObject status = new JSONObject(true); status.put("online", alive); status.put("ready", alive && p.ready); status.put("error", p == null ? "" : p.error); status.put("version", p == null ? "" : p.version); status.put("applying", alive && p.needsRefresh);
             JSONObject sync = new JSONObject(true); sync.put("supported", p != null && p.resourceSync); sync.put("ready", p != null && p.resourcesReady); sync.put("conflicts", p == null ? 0 : p.conflicts);
-            sync.put("error", p == null ? "" : p.resourceError); sync.put("lastSyncedAt", p == null ? 0 : p.lastResourceSync); sync.put("version", p == null ? "" : p.resourceVersion); status.put("resources", sync); r.put("remoteStatus", status);
+            sync.put("error", p == null ? "" : p.resourceError); sync.put("lastSyncedAt", p == null ? 0 : p.lastResourceSync); sync.put("version", p == null ? "" : p.resourceVersion); status.put("resources", sync);
+            JSONObject sessions = new JSONObject(true); sessions.put("supported", p != null && p.sessionSync); sessions.put("error", p == null ? "" : p.sessionError); sessions.put("lastSyncedAt", p == null ? 0 : p.lastSessionSync); status.put("sessions", sessions); r.put("remoteStatus", status);
         }
     }
     public static JSONObject find(JSONArray robots, String name) { if (robots != null) for (int i = 0; i < robots.size(); i++) { JSONObject r = robots.getJSONObject(i); if (r != null && Objects.equals(name, r.getString("name"))) return r; } return null; }
@@ -433,7 +473,7 @@ public final class RemoteAcpManager implements AutoCloseable {
         if (instance == this) instance = null;
         try { if (listener != null) listener.close(); } catch (IOException ignored) { }
         for (FramedConnection link : connections) link.close(); for (Peer peer : peers.values()) peer.disconnect();
-        mcpProxy.close(); resourceWorkers.shutdownNow(); timer.shutdownNow(); readers.shutdownNow(); callbacks.shutdownNow();
+        mcpProxy.close(); resourceWorkers.shutdownNow(); sessionWorkers.shutdownNow(); timer.shutdownNow(); readers.shutdownNow(); callbacks.shutdownNow();
     }
     private static final class Peer {
         final String name, workspace, mcpBase; final FramedConnection link;
@@ -445,6 +485,8 @@ public final class RemoteAcpManager implements AutoCloseable {
         volatile boolean observationSupported, observationAllowed;
         final Set<String> prompts = ConcurrentHashMap.newKeySet(); final AtomicBoolean refreshing = new AtomicBoolean();
         final AtomicBoolean resourceBusy = new AtomicBoolean();
+        final AtomicBoolean sessionBusy = new AtomicBoolean();
+        volatile boolean sessionSync; volatile String sessionError = ""; volatile long lastSessionSync;
         volatile boolean resourceSync, resourcesReady; volatile String managedRoot = "", resourceVersion = "", resourceError = "", barrierId = "";
         volatile int conflicts; volatile long lastResourceSync;
         volatile CompletableFuture<Void> resourceBarrier;

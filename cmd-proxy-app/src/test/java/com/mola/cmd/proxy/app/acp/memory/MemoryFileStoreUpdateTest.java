@@ -8,6 +8,10 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.IOException;
+import java.nio.file.*;
+import java.nio.charset.StandardCharsets;
+import java.util.stream.Stream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -15,6 +19,7 @@ import java.util.Collections;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class MemoryFileStoreUpdateTest {
 
@@ -98,6 +103,185 @@ public class MemoryFileStoreUpdateTest {
         String detail = store.readDetailBody(currentEntry());
         assertEquals("旧 detail 中的重要背景和边界", detail);
         assertFalse(detail.contains("UPDATE 不再接受的完整 detail"));
+    }
+
+    @Test
+    public void renameArchivesOldFileAndKeepsIdentityAndFullDetail() throws Exception {
+        Path oldFile = Paths.get(currentEntry().getFile());
+        byte[] before = Files.readAllBytes(oldFile);
+        MemoryAction action = updateAction();
+        action.setTitle("运行环境实测基线");
+        action.setDetailAppend("新内容");
+        apply(action);
+        MemoryEntry updated = currentEntry();
+        assertEquals("memory_001", updated.getId());
+        assertEquals("运行环境实测基线", updated.getTitle());
+        assertFalse(Files.exists(oldFile));
+        assertTrue(Files.exists(Paths.get(updated.getFile())));
+        assertTrue(store.readDetailBody(updated).contains("旧 detail 中的重要背景和边界"));
+        assertTrue(store.readDetailBody(updated).contains("新内容"));
+        try (Stream<Path> files = Files.list(scope().resolve("archive"))) {
+            Path archived = files.findFirst().get();
+            org.junit.Assert.assertArrayEquals(before, Files.readAllBytes(archived));
+        }
+        assertActiveFileCount(1);
+    }
+
+    @Test
+    public void typeChangeMovesFileAndRepeatedRenamesDoNotClobberArchives() throws Exception {
+        Path first = Paths.get(currentEntry().getFile());
+        MemoryAction action = updateAction();
+        action.setType("reference");
+        apply(action);
+        assertFalse(Files.exists(first));
+        assertTrue(currentEntry().getFile().contains("reference_"));
+        action.setType("project");
+        apply(action);
+        action.setType("reference");
+        apply(action);
+        assertActiveFileCount(1);
+        try (Stream<Path> files = Files.list(scope().resolve("archive"))) {
+            assertEquals(3, files.count());
+        }
+        assertEquals("memory_001", currentEntry().getId());
+    }
+
+    @Test
+    public void unchangedPathDoesNotLeaveBackupOrJournal() throws Exception {
+        Path oldFile = Paths.get(currentEntry().getFile());
+        MemoryAction action = updateAction();
+        action.setSummary("updated");
+        apply(action);
+        assertEquals(oldFile, Paths.get(currentEntry().getFile()));
+        assertActiveFileCount(1);
+        assertFalse(Files.exists(scope().resolve(".memory-update.properties")));
+        try (Stream<Path> files = Files.list(scope().resolve("archive"))) {
+            assertEquals(0, files.count());
+        }
+    }
+
+    @Test
+    public void targetCollisionPreservesBothFilesAndWorkingIndex() throws Exception {
+        MemoryEntry original = currentEntry();
+        Path target = Paths.get(original.getFile()).resolveSibling("project_occupied.md");
+        byte[] unrelated = "unrelated record".getBytes(StandardCharsets.UTF_8);
+        Files.write(target, unrelated);
+        MemoryIndex working = store.loadIndex(workspace);
+        try {
+            store.updateMemory(workspace, working, working.getMemories().get(0), next -> next.setTitle("occupied"));
+            fail("collision must be rejected");
+        } catch (IllegalStateException expected) {
+            assertTrue(expected.getCause().getMessage().contains("target already exists"));
+        }
+        assertEquals(original.getFile(), currentEntry().getFile());
+        assertEquals(original.getTitle(), working.getMemories().get(0).getTitle());
+        org.junit.Assert.assertArrayEquals(unrelated, Files.readAllBytes(target));
+        assertTrue(Files.exists(Paths.get(original.getFile())));
+    }
+
+    @Test
+    public void indexWriteFailureRollsBackRenameAndWorkingIndex() throws Exception {
+        MemoryEntry original = currentEntry();
+        MemoryIndex working = store.loadIndex(workspace);
+        MemoryFileStore failing = faultStore("MEMORY_INDEX.json", false, false);
+        try {
+            failing.updateMemory(workspace, working, working.getMemories().get(0), next -> next.setTitle("new-name"));
+            fail("write failure must propagate");
+        } catch (IllegalStateException expected) {
+            assertTrue(expected.getCause().getMessage().contains("injected"));
+        }
+        assertEquals(original.getTitle(), working.getMemories().get(0).getTitle());
+        assertEquals(original.getFile(), currentEntry().getFile());
+        assertTrue(Files.exists(Paths.get(original.getFile())));
+        assertActiveFileCount(1);
+        assertFalse(Files.exists(scope().resolve(".memory-update.properties")));
+    }
+
+    @Test
+    public void detailWriteFailureDoesNotPublishIndexOrLeaveNewFile() throws Exception {
+        MemoryIndex working = store.loadIndex(workspace);
+        MemoryFileStore failing = faultStore("project_new_name.md", false, false);
+        try {
+            failing.updateMemory(workspace, working, working.getMemories().get(0), next -> next.setTitle("new-name"));
+            fail("write failure must propagate");
+        } catch (IllegalStateException expected) { }
+        assertEquals("安全更新", currentEntry().getTitle());
+        assertActiveFileCount(1);
+    }
+
+    @Test
+    public void reloadRollsBackRenameInterruptedBeforeIndexCommit() throws Exception {
+        simulateCrash(false);
+        assertEquals("安全更新", currentEntry().getTitle());
+        assertTrue(Files.exists(Paths.get(currentEntry().getFile())));
+        assertActiveFileCount(1);
+        assertFalse(Files.exists(scope().resolve(".memory-update.properties")));
+    }
+
+    @Test
+    public void reloadCompletesRenameInterruptedAfterIndexCommit() throws Exception {
+        simulateCrash(true);
+        assertEquals("new-name", currentEntry().getTitle());
+        assertTrue(Files.exists(Paths.get(currentEntry().getFile())));
+        assertActiveFileCount(1);
+        assertFalse(Files.exists(scope().resolve(".memory-update.properties")));
+    }
+
+    @Test
+    public void dreamRenameUsesTheSameSafeMigration() throws Exception {
+        com.mola.cmd.proxy.app.acp.memory.model.DreamAction action =
+                new com.mola.cmd.proxy.app.acp.memory.model.DreamAction();
+        action.setAction(com.mola.cmd.proxy.app.acp.memory.model.DreamAction.ActionType.UPDATE);
+        action.setId("memory_001");
+        action.setFields(Collections.singletonMap("title", "Dream 改名"));
+        MemoryDreamer dreamer = new MemoryDreamer(
+                new com.mola.cmd.proxy.app.acp.memory.model.MemoryConfig(), store,
+                new com.mola.cmd.proxy.app.acp.AcpRobotParam());
+        java.lang.reflect.Method apply = MemoryDreamer.class.getDeclaredMethod(
+                "applyDreamActions", String.class, java.util.List.class, MemoryIndex.class);
+        apply.setAccessible(true);
+        Path oldFile = Paths.get(currentEntry().getFile());
+        int[] result = (int[]) apply.invoke(dreamer, workspace, Collections.singletonList(action), store.loadIndex(workspace));
+        assertEquals(1, result[2]);
+        assertEquals("Dream 改名", currentEntry().getTitle());
+        assertFalse(Files.exists(oldFile));
+        assertActiveFileCount(1);
+    }
+
+    private void simulateCrash(boolean afterCommit) throws Exception {
+        MemoryIndex working = store.loadIndex(workspace);
+        try {
+            faultStore("MEMORY_INDEX.json", true, afterCommit).updateMemory(workspace, working,
+                    working.getMemories().get(0), next -> next.setTitle("new-name"));
+            fail("expected process interruption");
+        } catch (SimulatedCrash expected) { }
+        assertTrue(Files.exists(scope().resolve(".memory-update.properties")));
+        store = new MemoryFileStore(temporaryFolder.getRoot().toPath().resolve("memory").toString());
+    }
+
+    private MemoryFileStore faultStore(String file, boolean crash, boolean afterWrite) {
+        return new MemoryFileStore(temporaryFolder.getRoot().toPath().resolve("memory").toString()) {
+            @Override protected void writeAtomically(Path path, byte[] bytes) throws IOException {
+                if (path.getFileName().toString().equals(file)) {
+                    if (afterWrite) super.writeAtomically(path, bytes);
+                    if (crash) throw new SimulatedCrash();
+                    throw new IOException("injected write failure");
+                }
+                super.writeAtomically(path, bytes);
+            }
+        };
+    }
+
+    private static class SimulatedCrash extends Error { }
+
+    private Path scope() {
+        return Paths.get(store.getStorageKey(workspace));
+    }
+
+    private void assertActiveFileCount(long expected) throws IOException {
+        try (Stream<Path> files = Files.list(scope().resolve("memories"))) {
+            assertEquals(expected, files.filter(Files::isRegularFile).count());
+        }
     }
 
     private MemoryAction updateAction() {

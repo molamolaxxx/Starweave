@@ -32,6 +32,45 @@ public class ConfigUiStaticAssetHttpTest {
     }
 
     @Test
+    public void protectsHtmlAssetsApiAndErrorsAgainstFraming() throws Exception {
+        String[] paths = {"/", "/assets/js/core.js", "/assets/unknown.woff2",
+                "/api/instances", "/api/instances?instance=missing-frame-test",
+                "/api/config?instance=missing-frame-test"};
+        int[] statuses = {200, 200, 404, 200, 200, 404};
+        for (int i = 0; i < paths.length; i++) {
+            HttpURLConnection connection = open(paths[i]);
+            try {
+                assertEquals(paths[i], statuses[i], connection.getResponseCode());
+                assertFrameProtection(connection);
+            } finally {
+                connection.disconnect();
+            }
+        }
+        HttpURLConnection head = open("/assets/js/core.js");
+        head.setRequestMethod("HEAD");
+        try {
+            assertEquals(200, head.getResponseCode());
+            assertFrameProtection(head);
+        } finally {
+            head.disconnect();
+        }
+        HttpURLConnection post = open("/assets/js/core.js");
+        post.setRequestMethod("POST");
+        try {
+            assertEquals(405, post.getResponseCode());
+            assertFrameProtection(post);
+        } finally {
+            post.disconnect();
+        }
+    }
+
+    private static void assertFrameProtection(HttpURLConnection connection) {
+        assertEquals("DENY", connection.getHeaderField("X-Frame-Options"));
+        assertEquals("frame-ancestors 'none';",
+                connection.getHeaderField("Content-Security-Policy"));
+    }
+
+    @Test
     public void servesBundledMaterialIconsFontWithImmutableCaching() throws Exception {
         HttpURLConnection connection = open("/assets/MaterialIcons-Regular.woff2");
 

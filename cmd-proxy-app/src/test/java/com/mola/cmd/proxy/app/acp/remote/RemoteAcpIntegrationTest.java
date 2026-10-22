@@ -207,6 +207,52 @@ public class RemoteAcpIntegrationTest {
             client.start(); assertEquals("remote response", client.prompt()); assertEquals(1, jvmCalls.get());
         }
     }
+    @Test(timeout=35000) public void restoresActualContextFromCenterAfterSdkDataDirectoryIsRebuilt() throws Exception {
+        configure(); String session;
+        try (Client client = new Client(robot(), false)) { client.start(); session = client.getSessionId(); client.prompt("remember unique remote context"); }
+        Path backup = RemoteResources.skillRoot(robot()).getParent().resolve("sessions/" + session + ".json");
+        until(() -> { try { return Files.exists(backup) && new String(Files.readAllBytes(backup), StandardCharsets.UTF_8).contains("remote response"); } catch (IOException e) { return false; } });
+        sdk.close(); until(() -> !RemoteAcpManager.online("test-remote"));
+        Path replacement = temp.newFolder("replacement-sessions-sdk").toPath(); Files.copy(data.resolve("identity"), replacement.resolve("identity"));
+        sdk = StarcoreClient.builder().starweaveUrl(base).name("test-remote").workspace(workspace).dataDirectory(replacement).start();
+        assertTrue(sdk.awaitReady(10, TimeUnit.SECONDS)); assertFalse(Files.exists(replacement.resolve("java-sessions/" + session + ".json")));
+        try (Client client = new Client(robot(), false, session)) {
+            client.start(); assertEquals(session, client.getSessionId()); assertEquals("remote response", client.prompt("continue previous conversation"));
+            String request = lastModelRequest.get().toString(); assertTrue(request.contains("remember unique remote context")); assertTrue(request.contains("continue previous conversation"));
+        }
+        assertTrue(Files.exists(replacement.resolve("java-sessions/" + session + ".json")));
+    }
+    @Test(timeout=30000) public void refusesDownloadIntoSessionStillOwnedByAnotherRuntime() throws Exception {
+        configure();
+        try (Client active = new Client(robot(), false)) {
+            active.start(); String session = active.getSessionId();
+            try (Client duplicate = new Client(robot(), false, session)) {
+                try { duplicate.start(); fail("Live session must not be overwritten"); }
+                catch (IOException expected) { assertTrue(expected.getMessage(), expected.getMessage().contains("其他运行实例")); }
+            }
+            assertEquals("remote response", active.prompt()); assertTrue(RemoteAcpManager.online("test-remote"));
+        }
+    }
+    @Test(timeout=30000) public void snapshotConflictPreservesBothCopiesAndDoesNotBlockOtherSessions() throws Exception {
+        configure(); String session;
+        try (Client client = new Client(robot(), false)) { client.start(); session = client.getSessionId(); client.prompt(); }
+        Path backup = RemoteResources.skillRoot(robot()).getParent().resolve("sessions/" + session + ".json");
+        until(() -> Files.exists(backup));
+        // Stop writers before making conflicting offline versions.
+        sdk.close(); until(() -> !RemoteAcpManager.online("test-remote"));
+        Path local = data.resolve("java-sessions/" + session + ".json");
+        byte[] localBytes = Files.readAllBytes(local); JsonObject remote = JsonParser.parseString(new String(Files.readAllBytes(backup), StandardCharsets.UTF_8)).getAsJsonObject();
+        remote.addProperty("updatedAt", "central-change"); Files.write(backup, remote.toString().getBytes(StandardCharsets.UTF_8));
+        JsonObject changed = JsonParser.parseString(new String(localBytes, StandardCharsets.UTF_8)).getAsJsonObject(); changed.addProperty("updatedAt", "offline-change"); Files.write(local, changed.toString().getBytes(StandardCharsets.UTF_8));
+        sdk = StarcoreClient.builder().starweaveUrl(base).name("test-remote").workspace(workspace).dataDirectory(data).start(); assertTrue(sdk.awaitReady(10, TimeUnit.SECONDS));
+        try (Client restore = new Client(robot(), false, session)) {
+            try { restore.start(); fail("Conflicting context must not be selected silently"); }
+            catch (IOException expected) { assertTrue(expected.getMessage(), expected.getMessage().contains("冲突")); }
+        }
+        assertTrue(new String(Files.readAllBytes(local), StandardCharsets.UTF_8).contains("offline-change"));
+        assertTrue(new String(Files.readAllBytes(backup), StandardCharsets.UTF_8).contains("central-change"));
+        try (Client other = new Client(robot(), false)) { other.start(); assertEquals("remote response", other.prompt()); }
+    }
     @Test(timeout=35000) public void syncsWorkspaceSkillsAndMemoryIndexThenRestoresEmptyReplica() throws Exception {
         configure(); AcpRobotParam owner = robot();
         Path centralSkill = RemoteResources.skillRoot(owner).resolve("demo/SKILL.md");
@@ -348,11 +394,15 @@ public class RemoteAcpIntegrationTest {
     private static void until(java.util.function.BooleanSupplier test) throws Exception { long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10); while (!test.getAsBoolean()) { if (System.nanoTime() > end) fail("condition timed out"); Thread.sleep(20); } }
     private static final class Client extends AbstractAcpClient {
         private final boolean mcp;
-        Client(AcpRobotParam robot, boolean mcp) { super(new RemoteStarcoreAgentProvider(), "/not/a/local/workspace", "remote-test", robot); this.mcp = mcp; }
+        private final String restore;
+        Client(AcpRobotParam robot, boolean mcp) { this(robot, mcp, null); }
+        Client(AcpRobotParam robot, boolean mcp, String restore) { super(new RemoteStarcoreAgentProvider(), "/not/a/local/workspace", "remote-test", robot); this.mcp = mcp; this.restore = restore; }
         protected void createSession() throws IOException {
             JsonObject params = new JsonObject(); params.addProperty("cwd", workspacePath); JsonArray servers = new JsonArray();
             if (mcp) { JsonObject server = new JsonObject(); server.addProperty("name", "harness"); server.addProperty("type", "http"); server.addProperty("url", McpAuthManager.getInstance().getBaseUrl() + "/test-mcp"); servers.add(server); }
-            params.add("mcpServers", servers); sessionId = sendRequest("session/new", params).getAsJsonObject("result").get("sessionId").getAsString();
+            params.add("mcpServers", servers);
+            if (restore != null) { params.addProperty("sessionId", restore); sendRequest("session/load", params); sessionId = restore; }
+            else sessionId = sendRequest("session/new", params).getAsJsonObject("result").get("sessionId").getAsString();
         }
         String prompt() throws IOException { return prompt("hello"); }
         String prompt(String text) throws IOException { return doSendPromptSync(text, "test"); }

@@ -311,6 +311,9 @@ window.addEventListener('resize',function(){var menu=document.getElementById('en
 
 function renderEnvTabs(){
 var c=document.getElementById('envTabs'),trigger=document.getElementById('envTrigger');
+var name=document.getElementById('envTriggerName'),label=curInstance?(curInstance.self?'本机':(envName(curInstance)||'未命名服务器')):'本机';
+if(name)name.textContent=label;
+trigger.setAttribute('aria-label','当前环境：'+label+'；切换运行环境');
 if(!instances.length){c.innerHTML='<div class="env-tab"><div class="env-tab-name">环境列表不可用</div></div>';trigger.title='环境列表不可用';return}
 c.innerHTML=instances.map(function(inst,index){
 var active=curInstance&&inst.instanceId===curInstance.instanceId;
@@ -322,7 +325,7 @@ return '<button type="button" class="'+cls+'" onclick="switchInstance(instances[
 +'<span class="env-tab-name">'+esc(envName(inst))+badge+'</span>'
 +'<span class="env-tab-meta">'+esc(meta)+'</span></button>';
 }).join('');
-trigger.title='当前环境：'+envName(curInstance)+'；点击切换运行环境';
+trigger.title='当前环境：'+label+'；点击切换运行环境';
 syncEnvironmentGate();
 }
 
@@ -337,7 +340,7 @@ environmentGate.switching=true;environmentGate.target=target;setEnvMenuOpen(fals
 var previous=curInstance,previousConfig=config,previousDirty=dirty,committed=false,previousState;
 try{
 if(dirty&&!await showConfirm('当前环境有未保存的修改，切换环境后这些修改将丢失。',{title:'放弃未保存的修改？',confirmText:'放弃并切换',danger:true}))return;
-if(target.remote&&!await ensureRegistryEnvironmentAccess(id))return;
+if(!await ensureRegistryEnvironmentAccess(id))return;
 environmentGate.requests.forEach(function(controller){controller.abort()});
 await Promise.allSettled(Array.from(environmentGate.reads));
 if(environmentOperationPending())throw new Error('原环境仍有操作正在执行，请稍后重试');

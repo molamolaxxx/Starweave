@@ -24,6 +24,9 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
+import com.mola.starweave.sdk.sync.ResourceFiles;
 
 /**
  * 记忆文件存储层，负责索引和明细文件的 CRUD。
@@ -59,6 +62,7 @@ public class MemoryFileStore {
             })
             .create();
     private static final String INDEX_FILE = "MEMORY_INDEX.json";
+    private static final String UPDATE_JOURNAL = ".memory-update.properties";
     private static final String DREAM_STATE_FILE = "DREAM_STATE.json";
     private static final String MEMORIES_DIR = "memories";
     private static final String ARCHIVE_DIR = "archive";
@@ -85,6 +89,19 @@ public class MemoryFileStore {
      * 加载项目的记忆索引，不存在时返回空索引。
      */
     public MemoryIndex loadIndex(String workspacePath) {
+        ReentrantLock lock = MemoryScopeLockRegistry.lockForStoragePath(getProjectDir(workspacePath));
+        lock.lock();
+        try {
+            recoverUpdate(workspacePath);
+            return readIndex(workspacePath);
+        } catch (IOException e) {
+            throw new IllegalStateException("无法恢复未完成的记忆更新", e);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private MemoryIndex readIndex(String workspacePath) {
         Path indexPath = getIndexFilePath(workspacePath);
         if (!Files.exists(indexPath)) {
             return new MemoryIndex();
@@ -103,13 +120,18 @@ public class MemoryFileStore {
      */
     public void saveIndex(String workspacePath, MemoryIndex index) {
         Path indexPath = getIndexFilePath(workspacePath);
+        ReentrantLock lock = MemoryScopeLockRegistry.lockForStoragePath(getProjectDir(workspacePath));
+        lock.lock();
         try {
+            recoverUpdate(workspacePath);
             Files.createDirectories(indexPath.getParent());
             index.setLastUpdated(ZonedDateTime.now().format(ISO_FORMATTER));
-            Files.write(indexPath, INDEX_GSON.toJson(index).getBytes(StandardCharsets.UTF_8));
+            writeAtomically(indexPath, INDEX_GSON.toJson(index).getBytes(StandardCharsets.UTF_8));
             logger.info("记忆索引已保存: {}, 记忆数={}", indexPath, index.getMemories().size());
         } catch (IOException e) {
-            logger.error("保存记忆索引失败: {}", indexPath, e);
+            throw new IllegalStateException("保存记忆索引失败: " + indexPath, e);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -153,12 +175,118 @@ public class MemoryFileStore {
             sb.append(entry.getDetail() != null ? entry.getDetail() : entry.getSummary());
             sb.append("\n");
 
-            Files.write(filePath, sb.toString().getBytes(StandardCharsets.UTF_8));
+            if (entry.getFile() != null
+                    && !Paths.get(entry.getFile()).toAbsolutePath().normalize().equals(filePath.toAbsolutePath().normalize())) {
+                throw new IOException("Memory path changes must use updateMemory: " + entry.getId());
+            }
+            if (Files.exists(filePath)) {
+                String existing = new String(Files.readAllBytes(filePath), StandardCharsets.UTF_8);
+                Matcher id = Pattern.compile("(?m)^id: ([^\\r\\n]+)$").matcher(existing);
+                if (id.find() ? !Objects.equals(entry.getId(), id.group(1).trim()) : entry.getFile() == null) {
+                    throw new IOException("Memory file already belongs to another record: " + filePath);
+                }
+            }
+            writeAtomically(filePath, sb.toString().getBytes(StandardCharsets.UTF_8));
             entry.setFile(filePath.toAbsolutePath().toString());
             logger.info("记忆明细已写入: {}", filePath);
         } catch (IOException e) {
-            logger.error("写入记忆明细失败: {}", entry.getId(), e);
+            throw new IllegalStateException("写入记忆明细失败: " + entry.getId(), e);
         }
+    }
+
+    /** Commit an update under the same scope lock used by remote resource exchange.
+     * The index replacement is the commit point; a journal recovers interrupted renames.
+     */
+    public void updateMemory(String workspace, MemoryIndex index, MemoryEntry original,
+                             Consumer<MemoryEntry> update) {
+        ReentrantLock lock = MemoryScopeLockRegistry.lockForStoragePath(getProjectDir(workspace));
+        lock.lock();
+        try {
+            recoverUpdate(workspace);
+            int position = index.getMemories().indexOf(original);
+            if (position < 0) throw new IllegalArgumentException("Memory is not in the supplied index");
+            MemoryEntry next = PRETTY_GSON.fromJson(PRETTY_GSON.toJson(original), MemoryEntry.class);
+            next.setDetail(readDetailBody(original));
+            update.accept(next);
+            if (!Objects.equals(original.getId(), next.getId())) throw new IOException("Memory identity cannot change");
+            Path root = getProjectDir(workspace).toAbsolutePath().normalize();
+            Path oldFile = Paths.get(original.getFile()).toAbsolutePath().normalize();
+            Path newFile = root.resolve(MEMORIES_DIR).resolve(buildFileName(next.getType(), next.getTitle()));
+            if (!oldFile.getParent().equals(root.resolve(MEMORIES_DIR))) throw new IOException("Memory detail is outside its scope");
+            boolean renamed = !oldFile.equals(newFile);
+            if (renamed && Files.exists(newFile)) throw new IOException("Memory target already exists: " + newFile);
+            Path backup = root.resolve(ARCHIVE_DIR).resolve(UUID.randomUUID() + "-" + oldFile.getFileName());
+            byte[] previousDetail = Files.readAllBytes(oldFile);
+            next.setFile(newFile.toString());
+            MemoryIndex after = INDEX_GSON.fromJson(INDEX_GSON.toJson(index), MemoryIndex.class);
+            after.getMemories().set(position, next);
+            after.setLastUpdated(ZonedDateTime.now().format(ISO_FORMATTER));
+            byte[] afterBytes = INDEX_GSON.toJson(after).getBytes(StandardCharsets.UTF_8);
+            Properties journal = new Properties();
+            journal.setProperty("oldFile", oldFile.getFileName().toString());
+            journal.setProperty("newFile", newFile.getFileName().toString());
+            journal.setProperty("backup", backup.getFileName().toString());
+            journal.setProperty("indexHash", ResourceFiles.hash(afterBytes));
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            journal.store(bytes, "Pending memory update");
+            // Back up first. Until the journal exists, no active detail or index is changed.
+            writeAtomically(backup, previousDetail);
+            writeAtomically(root.resolve(UPDATE_JOURNAL), bytes.toByteArray());
+            try {
+                writeDetail(workspace, next);
+                if (renamed) Files.delete(oldFile);
+                writeAtomically(getIndexFilePath(workspace), afterBytes);
+            } catch (IOException | RuntimeException failure) {
+                // An atomic replacement can succeed even if subsequent temporary-file cleanup fails.
+                boolean committed = Files.exists(getIndexFilePath(workspace))
+                        && ResourceFiles.hash(Files.readAllBytes(getIndexFilePath(workspace))).equals(ResourceFiles.hash(afterBytes));
+                try { recoverUpdate(workspace); } catch (IOException recovery) { failure.addSuppressed(recovery); }
+                if (!committed) throw failure;
+                logger.warn("记忆索引已提交，文件清理失败: " + original.getId(), failure);
+            }
+            index.getMemories().set(position, next);
+            index.setLastUpdated(after.getLastUpdated());
+            // Failure to remove a committed journal is safe: the next load finishes cleanup.
+            try { recoverUpdate(workspace); }
+            catch (IOException cleanup) { logger.warn("记忆更新已提交，恢复记录清理待重试: " + original.getId(), cleanup); }
+        } catch (IOException e) {
+            throw new IllegalStateException("记忆更新失败: " + original.getId(), e);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    protected void writeAtomically(Path path, byte[] bytes) throws IOException {
+        ResourceFiles.write(path, bytes);
+    }
+
+    private void recoverUpdate(String workspace) throws IOException {
+        Path root = getProjectDir(workspace).toAbsolutePath().normalize();
+        Path pending = root.resolve(UPDATE_JOURNAL);
+        if (!Files.exists(pending)) return;
+        Properties journal = new Properties();
+        try (java.io.InputStream in = Files.newInputStream(pending)) { journal.load(in); }
+        Path oldFile = journalFile(root.resolve(MEMORIES_DIR), journal.getProperty("oldFile"));
+        Path newFile = journalFile(root.resolve(MEMORIES_DIR), journal.getProperty("newFile"));
+        Path backup = journalFile(root.resolve(ARCHIVE_DIR), journal.getProperty("backup"));
+        Path index = getIndexFilePath(workspace);
+        boolean committed = Files.exists(index)
+                && ResourceFiles.hash(Files.readAllBytes(index)).equals(journal.getProperty("indexHash"));
+        if (committed) {
+            if (!oldFile.equals(newFile)) Files.deleteIfExists(oldFile);
+        } else {
+            writeAtomically(oldFile, Files.readAllBytes(backup));
+            if (!oldFile.equals(newFile)) Files.deleteIfExists(newFile);
+        }
+        // Remove the journal before its backup so interruption always leaves a recoverable journal.
+        Files.delete(pending);
+        if (!committed || oldFile.equals(newFile)) Files.deleteIfExists(backup);
+    }
+
+    private Path journalFile(Path directory, String name) throws IOException {
+        if (name == null || name.isEmpty() || name.contains("/") || name.contains("\\")
+                || name.equals(".") || name.equals("..")) throw new IOException("Invalid memory update journal");
+        return directory.resolve(name);
     }
 
     /**
@@ -322,6 +450,17 @@ public class MemoryFileStore {
      */
     public void applyActions(String workspacePath, List<MemoryAction> actions,
                              MemoryIndex existingIndex, int maxEntries) {
+        ReentrantLock lock = MemoryScopeLockRegistry.lockForStoragePath(getProjectDir(workspacePath));
+        lock.lock();
+        try {
+            applyActionsLocked(workspacePath, actions, existingIndex, maxEntries);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void applyActionsLocked(String workspacePath, List<MemoryAction> actions,
+                                    MemoryIndex existingIndex, int maxEntries) {
         String now = ZonedDateTime.now().format(ISO_FORMATTER);
         boolean changed = false;
 
@@ -358,31 +497,20 @@ public class MemoryFileStore {
                         if (entry.getId().equals(action.getId())) {
                             String oldTitle = entry.getTitle();
                             String oldSummary = entry.getSummary();
-                            try {
-                                entry.setDetail(readDetailBody(entry));
-                            } catch (IOException e) {
-                                throw new IllegalStateException(
-                                        "无法安全更新记忆 " + entry.getId()
-                                                + "：旧明细读取失败", e);
-                            }
-                            if (action.getType() != null) entry.setType(action.getType());
-                            if (action.getTitle() != null) entry.setTitle(action.getTitle());
-                            if (action.getSummary() != null) entry.setSummary(action.getSummary());
-                            entry.setDetail(appendDetail(entry.getDetail(),
-                                    action.getDetailAppend(), now));
-                            if (action.getTags() != null) {
-                                entry.setTags(action.getTags());
-                            }
-                            if (action.getRelatedSkills() != null) {
-                                entry.setRelatedSkills(action.getRelatedSkills());
-                            }
-                            entry.setUpdatedAt(now);
-                            writeDetail(workspacePath, entry);
+                            updateMemory(workspacePath, existingIndex, entry, next -> {
+                                if (action.getType() != null) next.setType(action.getType());
+                                if (action.getTitle() != null) next.setTitle(action.getTitle());
+                                if (action.getSummary() != null) next.setSummary(action.getSummary());
+                                next.setDetail(appendDetail(next.getDetail(), action.getDetailAppend(), now));
+                                if (action.getTags() != null) next.setTags(action.getTags());
+                                if (action.getRelatedSkills() != null) next.setRelatedSkills(action.getRelatedSkills());
+                                next.setUpdatedAt(now);
+                            });
                             changed = true;
                             logger.info("[记忆 UPDATE] id={}, type={}, title=\"{}\" -> \"{}\", summary=\"{}\" -> \"{}\"",
-                                    entry.getId(), entry.getType(),
-                                    oldTitle, entry.getTitle(),
-                                    oldSummary, entry.getSummary());
+                                    entry.getId(), action.getType() == null ? entry.getType() : action.getType(),
+                                    oldTitle, action.getTitle() == null ? oldTitle : action.getTitle(),
+                                    oldSummary, action.getSummary() == null ? oldSummary : action.getSummary());
                             break;
                         }
                     }
@@ -681,16 +809,18 @@ public class MemoryFileStore {
     }
 
     public void validateSyncedDetails(String workspace, java.util.Map<String, byte[]> changes) throws IOException {
-        java.util.Set<String> ids = new java.util.HashSet<>(); MemoryIndex index = loadIndex(workspace);
+        java.util.Map<String, String> ids = new java.util.HashMap<>(); MemoryIndex index = loadIndex(workspace);
         for (MemoryEntry entry : index.getMemories()) {
             String file = entry.getFile() == null ? "" : Paths.get(entry.getFile()).getFileName().toString();
-            if (!changes.containsKey(file)) ids.add(entry.getId());
+            if (!changes.containsKey(file)) ids.put(entry.getId(), file);
         }
         for (java.util.Map.Entry<String, byte[]> change : changes.entrySet()) {
             validateSyncedDetail(workspace, change.getKey(), change.getValue());
             if (change.getValue() != null) {
                 MemoryEntry entry = parseSyncedDetail(workspace, change.getKey(), new String(change.getValue(), StandardCharsets.UTF_8));
-                if (!ids.add(entry.getId())) throw new IOException("Duplicate memory identity");
+                String previous = ids.putIfAbsent(entry.getId(), change.getKey());
+                if (previous != null) throw new IOException("Duplicate memory identity: id=" + entry.getId()
+                        + "; existingFile=" + previous + "; conflictingFile=" + change.getKey());
             }
         }
     }

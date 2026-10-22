@@ -37,6 +37,38 @@ public class RemoteResourcesTest {
         assertEquals(1, memory.loadIndex(robot.getWorkDir()).getMemories().size()); assertEquals("m-one", memory.loadIndex(robot.getWorkDir()).getMemories().get(0).getId());
         Files.delete(client.root().resolve("memory/renamed.md")); exchange(); assertEquals(0, memory.loadIndex(robot.getWorkDir()).getMemories().size());
     }
+    @Test public void centerRenamePropagatesWithoutDuplicateIdentityAndPreservesBody() throws Exception {
+        local("memory/a.md", "---\nid: stable-id\ntype: reference\ntitle: Original\n---\n\noriginal body");
+        exchange();
+        MemoryIndex index = memory.loadIndex(robot.getWorkDir());
+        MemoryAction update = new MemoryAction();
+        update.setAction(MemoryAction.ActionType.UPDATE);
+        update.setId("stable-id"); update.setTitle("Renamed");
+        memory.applyActions(robot.getWorkDir(), Collections.singletonList(update), index, 30);
+        exchange();
+        assertFalse(Files.exists(client.root().resolve("memory/a.md")));
+        Path renamed = client.root().resolve("memory/reference_renamed.md");
+        assertTrue(Files.exists(renamed));
+        assertTrue(new String(Files.readAllBytes(renamed), StandardCharsets.UTF_8).contains("original body"));
+        assertEquals(1, memory.loadIndex(robot.getWorkDir()).getMemories().size());
+        assertEquals("stable-id", memory.loadIndex(robot.getWorkDir()).getMemories().get(0).getId());
+        exchange(); // Subsequent periodic exchange must remain healthy.
+    }
+    @Test public void centerOrphanDuplicateReportsIdentityAndBothFiles() throws Exception {
+        local("memory/current.md", "---\nid: stable-id\n---\n\ncurrent body"); exchange();
+        Path current = Paths.get(memory.loadIndex(robot.getWorkDir()).getMemories().get(0).getFile());
+        Files.copy(current, current.resolveSibling("orphan.md"));
+        try {
+            server.exchange(client.request()); fail("duplicate must be rejected");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains("Duplicate memory identity"));
+            assertTrue(expected.getMessage().contains("stable-id"));
+            assertTrue(expected.getMessage().contains("current.md"));
+            assertTrue(expected.getMessage().contains("orphan.md"));
+        }
+        assertEquals(1, memory.loadIndex(robot.getWorkDir()).getMemories().size());
+        assertTrue(Files.exists(current.resolveSibling("orphan.md"))); // Diagnosis never auto-deletes data.
+    }
     @Test public void duplicateIdsAndGeneratedIndexUploadsAreRejectedBeforeAnyWrites() throws Exception {
         local("memory/a.md", "---\nid: duplicate\n---\n\none"); local("memory/b.md", "---\nid: duplicate\n---\n\ntwo");
         try { server.exchange(client.request()); fail(); } catch (IOException expected) { }

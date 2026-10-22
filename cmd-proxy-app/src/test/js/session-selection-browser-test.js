@@ -50,7 +50,7 @@ const server = http.createServer((req, res) => {
             }
             await setup();
             assert.deepEqual(await page.locator('.sidebar .nav-item').evaluateAll(nodes => nodes.map(n => n.dataset.page)),
-                ['sessions', 'teams', 'tasks', 'schedules', 'observations', 'acp', 'channels', 'mcp-auth', 'basic']);
+                ['sessions', 'acp', 'teams', 'tasks', 'schedules', 'observations', 'channels', 'mcp-auth', 'basic']);
             await page.evaluate(() => switchPage('sessions'));
             await page.waitForFunction(() => starSessions.selectedGroupId === 'one');
             if (width < 860) await page.locator('.session-mobile-list').first().click();

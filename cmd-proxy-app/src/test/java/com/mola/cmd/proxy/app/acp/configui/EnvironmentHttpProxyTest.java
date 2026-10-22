@@ -28,6 +28,8 @@ public class EnvironmentHttpProxyTest {
             exchange.getResponseHeaders().set("Content-Type","application/octet-stream");
             exchange.getResponseHeaders().set("Content-Disposition","attachment; filename=test.bin");
             exchange.getResponseHeaders().set("ETag","test-etag");
+            exchange.getResponseHeaders().set("X-Frame-Options", "SAMEORIGIN");
+            exchange.getResponseHeaders().set("Content-Security-Policy", "default-src 'self'; frame-ancestors *;");
             exchange.sendResponseHeaders(206,binary.length);try(OutputStream output=exchange.getResponseBody()){output.write(binary);}
         });
         target.createContext("/error",exchange->{byte[] data="failed".getBytes(StandardCharsets.UTF_8);exchange.sendResponseHeaders(409,data.length);try(OutputStream output=exchange.getResponseBody()){output.write(data);}});
@@ -38,6 +40,12 @@ public class EnvironmentHttpProxyTest {
             connection.setReadTimeout(5000);connection.setRequestMethod("POST");connection.setDoOutput(true);connection.setRequestProperty("Authorization","Bearer test");
             try(OutputStream output=connection.getOutputStream()){output.write(binary);}
             assertEquals(206,connection.getResponseCode());assertArrayEquals(binary,read(connection.getInputStream()));
+            assertEquals("DENY", connection.getHeaderField("X-Frame-Options"));
+            java.util.List<String> policies = connection.getHeaderFields().entrySet().stream()
+                    .filter(entry -> "Content-Security-Policy".equalsIgnoreCase(entry.getKey()))
+                    .findFirst().get().getValue();
+            assertTrue(policies.contains("frame-ancestors 'none';"));
+            assertTrue(policies.contains("default-src 'self'; frame-ancestors *;"));
             assertEquals("attachment; filename=test.bin",connection.getHeaderField("Content-Disposition"));assertEquals("test-etag",connection.getHeaderField("ETag"));assertEquals(1,calls.get());connection.disconnect();
             connection=(HttpURLConnection)new URL("http://127.0.0.1:"+gateway.getAddress().getPort()+"/error").openConnection();assertEquals(409,connection.getResponseCode());assertEquals("failed",new String(read(connection.getErrorStream()),StandardCharsets.UTF_8));connection.disconnect();
         } finally {proxy.close();gateway.stop(0);target.stop(0);}
@@ -98,7 +106,7 @@ public class EnvironmentHttpProxyTest {
         target.createContext("/stream",exchange->{exchange.getResponseHeaders().set("Content-Type","text/event-stream");exchange.sendResponseHeaders(200,0);try(OutputStream output=exchange.getResponseBody()){output.write("data: hello\n\n".getBytes(StandardCharsets.UTF_8));output.flush();try{release.await(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}}});
         gateway.createContext("/",exchange->proxy.forward(exchange,target.getAddress().getPort()));target.start();gateway.start();
         try {
-            Future<?> reader=executor.submit(()->{try{HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+gateway.getAddress().getPort()+"/stream").openConnection();c.setReadTimeout(3000);try(BufferedReader input=new BufferedReader(new InputStreamReader(c.getInputStream(),StandardCharsets.UTF_8))){assertEquals("data: hello",input.readLine());first.countDown();input.readLine();input.readLine();}c.disconnect();}catch(IOException expected){}});
+            Future<?> reader=executor.submit(()->{try{HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+gateway.getAddress().getPort()+"/stream").openConnection();c.setReadTimeout(3000);assertEquals("DENY",c.getHeaderField("X-Frame-Options"));assertEquals("frame-ancestors 'none';",c.getHeaderField("Content-Security-Policy"));try(BufferedReader input=new BufferedReader(new InputStreamReader(c.getInputStream(),StandardCharsets.UTF_8))){assertEquals("data: hello",input.readLine());first.countDown();input.readLine();input.readLine();}c.disconnect();}catch(IOException expected){}});
             assertTrue("SSE must arrive before upstream finishes",first.await(3,TimeUnit.SECONDS));proxy.close();reader.get(3,TimeUnit.SECONDS);
         } finally {release.countDown();proxy.close();gateway.stop(0);target.stop(0);executor.shutdownNow();}
     }

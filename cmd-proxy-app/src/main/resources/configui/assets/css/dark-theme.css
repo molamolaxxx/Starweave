@@ -72,7 +72,7 @@ html[data-theme="dark"] :focus-visible{outline:2px solid var(--sw-sky);outline-o
 html[data-theme="dark"] ::selection{background:#4f477d;color:#e9e5f1}
 html[data-theme="dark"] :is(.session-messages,.team-session-dialog .session-messages) .message-bubble::selection{background:#87aabd;color:#101827}
 html[data-theme="dark"] :is(.session-messages,.team-session-dialog .session-messages) .message-bubble::-moz-selection{background:#87aabd;color:#101827}
-html[data-theme="dark"] *{scrollbar-color:#34445e #101827}
+@media(max-width:860px){html[data-theme="dark"] *{scrollbar-color:#34445e #101827}}
 #themeToggle{white-space:nowrap}
 html[data-theme="dark"] .context-usage-track{stroke:var(--sw-border)}
 html[data-theme="dark"] .context-usage-value{fill:var(--sw-text)}

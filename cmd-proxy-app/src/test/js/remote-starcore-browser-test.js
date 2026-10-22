@@ -50,6 +50,11 @@ const server = http.createServer((req, res) => {
       assert.match(await page.evaluate(() => notices[notices.length - 1]), /失效后再删除/);
       assert.equal(await page.evaluate(() => config.robots.length), 1);
       assert.match(await page.locator('#robotList').innerText(), /资源冲突 1 项/);
+      await page.evaluate(() => { config.robots[0].remoteStatus.sessions = { supported: true, error: '' }; renderRobots(); });
+      assert.match(await page.locator('#robotList').innerText(), /会话同步已启用/);
+      await page.evaluate(() => { config.robots[0].remoteStatus.sessions.error = '会话快照版本冲突，双方副本已保留'; renderRobots(); });
+      const backupError = page.locator('#robotList span', { hasText: /^会话备份异常$/ });
+      assert.equal(await backupError.getAttribute('title'), '会话快照版本冲突，双方副本已保留');
       await page.evaluate(async () => { showConfirm = async () => true; await openAgentResource(0, 'skill'); });
       assert.match(await page.locator('#resourceDialogSubtitle').innerText(), /Starweave 持久副本/);
       await page.locator('#resourceConflictButton').click();

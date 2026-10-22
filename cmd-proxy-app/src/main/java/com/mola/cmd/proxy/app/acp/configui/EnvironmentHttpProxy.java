@@ -62,6 +62,8 @@ public final class EnvironmentHttpProxy implements AutoCloseable {
                 Set<String> skip = hopHeaders(responseHeaders); skip.add("content-length");
                 for (Map.Entry<String, List<String>> header : responseHeaders.entrySet())
                     if (!skip.contains(header.getKey().toLowerCase(Locale.ROOT))) exchange.getResponseHeaders().put(header.getKey(), new ArrayList<>(header.getValue()));
+                // Upstream headers must not weaken this public server's frame protection.
+                FrameProtectionHeaders.apply(exchange);
                 ResponseBody responseBody = response.body();
                 boolean empty = "HEAD".equals(method) || response.code() == 204 || response.code() == 304 || responseBody == null || responseBody.contentLength() == 0;
                 if ("HEAD".equals(method) && response.header("Content-Length") != null)

@@ -34,6 +34,15 @@ public final class StarcoreClient implements AutoCloseable {
     private volatile long lastReceived;
     private final String identity;
     private final ResourceReplica resources;
+    private final SessionReplica sessions;
+    private final ScheduledExecutorService sessionWorker = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "starcore-session-sync"); t.setDaemon(true); return t; });
+    private final ConcurrentMap<String, CompletableFuture<JsonObject>> sessionRequests = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Runtime> sessionOwners = new ConcurrentHashMap<>();
+    private final Set<Runtime> liveRuntimes = ConcurrentHashMap.newKeySet();
+    private final Semaphore sessionPrepareSlots = new Semaphore(16);
+    private final AtomicBoolean sessionUploadQueued = new AtomicBoolean();
+    private final Set<String> dirtySessions = ConcurrentHashMap.newKeySet();
+    private volatile boolean sessionSyncSupported, sessionsBound;
     private final ScheduledExecutorService resourceWorker = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "starcore-resource-sync"); t.setDaemon(true); return t; });
     private volatile boolean resourceSyncSupported, resourcesReady, modelReady;
     private volatile String pendingResourceRequest = "";
@@ -57,9 +66,11 @@ public final class StarcoreClient implements AutoCloseable {
             identity = new String(Files.readAllBytes(file), StandardCharsets.UTF_8).trim();
             if (identity.length() < 16) throw new IOException("Invalid StarCore identity file");
             resources = new ResourceReplica(b.dataDirectory, b.workspace);
+            sessions = new SessionReplica(b.dataDirectory);
         } catch (IOException e) { identityLock.release(); identityChannel.close(); throw e; }
         timer.scheduleAtFixedRate(this::heartbeat, 1, 10, TimeUnit.SECONDS);
         resourceWorker.scheduleWithFixedDelay(this::syncResources, 1, 3, TimeUnit.SECONDS);
+        sessionWorker.scheduleWithFixedDelay(this::syncSessions, 1, 3, TimeUnit.SECONDS);
         FramedConnection.daemon("connector", this::connectLoop);
     }
     public static StarcoreClient start(String starweaveUrl, String name) throws IOException { return builder().starweaveUrl(starweaveUrl).name(name).start(); }
@@ -78,6 +89,7 @@ public final class StarcoreClient implements AutoCloseable {
             Socket pendingSocket = null;
             setState(State.CONNECTING);
             resourceSyncSupported = false; resourcesReady = false; modelReady = false; pendingResourceRequest = ""; requestedBarrier.set("");
+            sessionSyncSupported = false; sessionsBound = false;
             try {
                 JsonObject info = discover(); if (closed.get()) return;
                 String host = Wire.str(info, "host"); if (host.isEmpty()) host = options.url.getHost();
@@ -95,13 +107,14 @@ public final class StarcoreClient implements AutoCloseable {
                 hello.addProperty("observationVersion", 1);
                 hello.addProperty("observationAllowed", options.allowShell);
                 hello.addProperty("resourceSyncVersion", 1); hello.addProperty("managedRoot", resources.root().toString());
+                hello.addProperty("sessionSyncVersion", 1);
                 hello.addProperty("sdkVersion", "1.0.0"); hello.addProperty("platform", System.getProperty("os.name"));
                 hello.addProperty("starweaveUrl", options.url.toString());
                 if (!options.accessToken.isEmpty()) hello.addProperty("accessToken", options.accessToken);
                 connection.send(hello);
                 while (!closed.get() && connection.isAlive()) { JsonObject f = connection.read(); lastReceived = System.nanoTime(); receive(connection, f); backoff = 1000; }
             } catch (Exception e) { lastError = "StarCore connection unavailable (" + e.getClass().getSimpleName() + ")"; }
-            finally { FramedConnection connection = link; link = null; if (connection != null) connection.close(); if (pendingSocket != null) try { pendingSocket.close(); } catch (IOException ignored) { } clearObservations(); clearRuntimes(); if (!closed.get()) setState(State.CONNECTING); }
+            finally { FramedConnection connection = link; link = null; if (connection != null) connection.close(); failSessionRequests(); if (pendingSocket != null) try { pendingSocket.close(); } catch (IOException ignored) { } clearObservations(); clearRuntimes(); if (!closed.get()) setState(State.CONNECTING); }
             synchronized (this) {
                 if (!closed.get()) try { wait(backoff + ThreadLocalRandom.current().nextLong(250)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
             }
@@ -122,11 +135,21 @@ public final class StarcoreClient implements AutoCloseable {
         if (type.equals("error")) throw new IOException("StarCore registration rejected");
         if (type.equals("registered")) {
             lastError = ""; setState(State.CONNECTED);
+            sessionSyncSupported = f.has("sessionSyncVersion") && f.get("sessionSyncVersion").getAsInt() == 1;
+            if (sessionSyncSupported) sessionWorker.execute(() -> {
+                try { if (connection != link) return; sessions.bind(Wire.str(f, "resourceSetId")); sessionsBound = true; syncSessions(); }
+                catch (IOException | RuntimeException e) { sessionFailure(connection, e); connection.close(); }
+            });
             resourceSyncSupported = f.has("resourceSyncVersion") && f.get("resourceSyncVersion").getAsInt() == 1;
             if (resourceSyncSupported) { resourceWorker.execute(() -> {
                 try { if (connection != link) return; resources.bind(Wire.str(f, "resourceSetId")); syncResources(); }
                 catch (IOException e) { logResourceSyncFailure("bind-resource-set", e); lastError = "Resource set does not match local data directory"; connection.close(); }
             }); }
+            return;
+        }
+        if (type.equals("sessions_response")) {
+            CompletableFuture<JsonObject> future = sessionRequests.remove(Wire.str(f, "requestId"));
+            if (future != null) future.complete(f);
             return;
         }
         if (type.equals("observation_execute")) { executeObservation(connection, f); return; }
@@ -179,9 +202,15 @@ public final class StarcoreClient implements AutoCloseable {
         }
         if (type.equals("acp")) {
             Runtime r = runtimes.get(id); if (r == null) return;
+            JsonObject message = f.getAsJsonObject("message"); String method = Wire.str(message, "method");
+            if (sessionSyncSupported && (method.equals("session/load") || method.equals("session/resume"))) {
+                if (!sessionPrepareSlots.tryAcquire()) { acpFailure(connection, id, message, "会话恢复队列已满，请稍后重试"); return; }
+                try { sessionWorker.execute(() -> { try { prepareSession(connection, r, message); } finally { sessionPrepareSlots.release(); } }); }
+                catch (RejectedExecutionException e) { sessionPrepareSlots.release(); acpFailure(connection, id, message, "会话同步服务已关闭"); }
+                return;
+            }
             // Embedded input dispatch is nonblocking; model/MCP work runs on its own worker.
-            byte[] bytes = (f.get("message").toString() + "\n").getBytes(StandardCharsets.UTF_8);
-            try { r.process.getOutputStream().write(bytes); r.process.getOutputStream().flush(); }
+            try { forward(r, message); }
             catch (IOException | RuntimeException e) {
                 runtimes.remove(id, r); r.process.destroy();
                 JsonObject failure = Wire.frame("runtime_error", id); failure.addProperty("error", "远程执行实例已关闭或不再接收消息"); connection.send(failure);
@@ -193,6 +222,99 @@ public final class StarcoreClient implements AutoCloseable {
             Runtime r = runtimes.remove(id);
             if (r != null) try { lifecycle.execute(r.process::destroy); } catch (RejectedExecutionException e) { r.process.destroy(); }
         }
+    }
+    private void forward(Runtime runtime, JsonObject message) throws IOException {
+        if (message.has("id") && message.has("method")) runtime.requests.put(message.get("id").toString(), message.deepCopy());
+        byte[] bytes = (message + "\n").getBytes(StandardCharsets.UTF_8);
+        runtime.process.getOutputStream().write(bytes); runtime.process.getOutputStream().flush();
+    }
+    private void prepareSession(FramedConnection connection, Runtime runtime, JsonObject message) {
+        String target = ""; boolean reserved = false;
+        try {
+            if (connection != link || !runtime.process.isAlive() || runtimes.get(runtime.id) != runtime) return;
+            if (!sessionsBound) throw new IOException("会话同步尚未就绪，请稍后重试");
+            target = SessionSnapshots.id(Wire.str(message.getAsJsonObject("params"), "sessionId"));
+            Runtime owner = sessionOwners.putIfAbsent(target, runtime);
+            if (owner != null && owner != runtime) throw new IOException("目标会话仍由其他运行实例使用，请先关闭该会话");
+            reserved = owner == null;
+            if (reserved) sessions.prepare(target, request -> exchangeSession(connection, request));
+            if (connection != link || runtimes.get(runtime.id) != runtime) throw new IOException("会话恢复期间连接或运行实例已关闭");
+            forward(runtime, message);
+        } catch (IOException | RuntimeException e) {
+            if (reserved) sessionOwners.remove(target, runtime);
+            sessionFailure(connection, e); acpFailure(connection, runtime.id, message, e.getMessage());
+        }
+    }
+    private static void acpFailure(FramedConnection connection, String id, JsonObject request, String error) {
+        if (!request.has("id")) return;
+        JsonObject message = new JsonObject(); message.addProperty("jsonrpc", "2.0"); message.add("id", request.get("id"));
+        JsonObject failure = new JsonObject(); failure.addProperty("code", -32603); failure.addProperty("message", error); message.add("error", failure);
+        JsonObject frame = Wire.frame("acp", id); frame.add("message", message);
+        try { connection.send(frame); } catch (IOException ignored) { }
+    }
+    private JsonObject exchangeSession(FramedConnection connection, JsonObject request) throws IOException {
+        if (link != connection || !connection.isAlive() || closed.get()) throw new IOException("会话同步连接已断开");
+        String id = UUID.randomUUID().toString(); CompletableFuture<JsonObject> future = new CompletableFuture<>(); sessionRequests.put(id, future);
+        try {
+            request.addProperty("type", "sessions_request"); request.addProperty("requestId", id); connection.send(request);
+            return future.get(25, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            // A timed-out request may still be committing: fence it before retrying on another connection.
+            connection.close(); throw new IOException("会话同步未完成，请重试", e);
+        } finally { sessionRequests.remove(id); }
+    }
+    private void syncSessions() {
+        FramedConnection connection = link;
+        if (!sessionSyncSupported || !sessionsBound || connection == null || !connection.isAlive() || closed.get()) return;
+        try {
+            IOException failure = null; int count = 0;
+            for (String id : dirtySessions) {
+                if (++count > 16) break;
+                dirtySessions.remove(id);
+                try { sessions.uploadOne(id, request -> exchangeSession(connection, request)); }
+                catch (IOException e) { dirtySessions.add(id); failure = e; }
+            }
+            sessions.uploadBatch(request -> exchangeSession(connection, request));
+            if (failure != null) throw failure;
+            JsonObject status = Wire.frame("sessions_status", null); status.addProperty("error", ""); connection.send(status);
+        } catch (IOException | RuntimeException e) { sessionFailure(connection, e); }
+    }
+    private void sessionFailure(FramedConnection connection, Exception e) {
+        if (closed.get() || connection != link) return;
+        LOG.warn("Starcore session sync failed; agent=" + options.name + "; dataDirectory=" + options.dataDirectory, e);
+        JsonObject status = Wire.frame("sessions_status", null); status.addProperty("error", e.getMessage());
+        try { connection.send(status); } catch (IOException ignored) { }
+    }
+    private void queueSessionUpload() {
+        if (!sessionSyncSupported || closed.get() || !sessionUploadQueued.compareAndSet(false, true)) return;
+        try { sessionWorker.execute(() -> { sessionUploadQueued.set(false); syncSessions(); }); }
+        catch (RejectedExecutionException e) { sessionUploadQueued.set(false); }
+    }
+    private void queueSessionUpload(String id) {
+        if (!id.isEmpty() && sessionSyncSupported && !closed.get()) dirtySessions.add(id);
+        queueSessionUpload();
+    }
+    private void failSessionRequests() {
+        for (CompletableFuture<JsonObject> future : sessionRequests.values()) future.completeExceptionally(new IOException("会话同步连接已断开"));
+        sessionRequests.clear();
+    }
+    private void onRuntimeMessage(Runtime runtime, JsonObject message) {
+        if (!message.has("id") || message.has("method")) return;
+        JsonObject request = runtime.requests.remove(message.get("id").toString()); if (request == null) return;
+        String method = Wire.str(request, "method"); String target = request.has("params") ? Wire.str(request.getAsJsonObject("params"), "sessionId") : "";
+        if (message.has("error")) {
+            if ((method.equals("session/load") || method.equals("session/resume")) && !runtime.loaded.contains(target)) sessionOwners.remove(target, runtime);
+            return;
+        }
+        if (method.equals("session/new")) target = Wire.str(message.getAsJsonObject("result"), "sessionId");
+        if (method.equals("session/new") || method.equals("session/load") || method.equals("session/resume")) {
+            sessionOwners.putIfAbsent(target, runtime); runtime.loaded.add(target);
+        }
+        if (method.equals("session/close") || method.equals("session/end") || method.equals("_session/end")) {
+            runtime.loaded.remove(target); sessionOwners.remove(target, runtime);
+        }
+        queueSessionUpload(target);
     }
     private void executeObservation(FramedConnection connection, JsonObject request) throws IOException {
         String requestId = Wire.str(request, "requestId");
@@ -250,15 +372,23 @@ public final class StarcoreClient implements AutoCloseable {
             if (connection != link || !connection.isAlive()) return;
             if (runtimes.size() >= options.maxRuntimes) throw new IOException("Remote runtime limit reached");
             EmbeddedAgentRuntime process = new EmbeddedAgentRuntime(config(f.getAsJsonObject("config")));
-            Runtime runtime = new Runtime(process); if (runtimes.putIfAbsent(id, runtime) != null) { process.destroy(); throw new IOException("Duplicate runtime"); }
-            if (connection != link || !connection.isAlive()) { runtimes.remove(id, runtime); process.destroy(); return; }
+            Runtime runtime = new Runtime(id, process); if (runtimes.putIfAbsent(id, runtime) != null) { process.destroy(); throw new IOException("Duplicate runtime"); }
+            liveRuntimes.add(runtime);
+            if (connection != link || !connection.isAlive()) { runtimes.remove(id, runtime); process.destroy(); liveRuntimes.remove(runtime); return; }
             connection.send(Wire.frame("opened", id));
             FramedConnection.daemon("runtime-output", () -> {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
-                    while ((line = reader.readLine()) != null) { JsonObject event = Wire.frame("acp", id); event.add("message", JsonParser.parseString(line)); connection.send(event); }
+                    while ((line = reader.readLine()) != null) { JsonObject message = JsonParser.parseString(line).getAsJsonObject(); onRuntimeMessage(runtime, message); JsonObject event = Wire.frame("acp", id); event.add("message", message); connection.send(event); }
                 } catch (Exception e) { process.destroy(); }
-                finally { runtimes.remove(id, runtime); try { connection.send(Wire.frame("closed", id)); } catch (IOException ignored) { } }
+                finally {
+                    process.destroy();
+                    try { process.waitFor(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    runtimes.remove(id, runtime); sessionOwners.entrySet().removeIf(entry -> entry.getValue() == runtime);
+                    liveRuntimes.remove(runtime);
+                    for (String session : runtime.loaded) if (sessionSyncSupported && !closed.get()) dirtySessions.add(session);
+                    queueSessionUpload(); try { connection.send(Wire.frame("closed", id)); } catch (IOException ignored) { }
+                }
             });
         } catch (Exception e) {
             JsonObject reply = Wire.frame("runtime_error", id); reply.addProperty("error", "无法启动远程星核，请检查配置或实例上限");
@@ -293,14 +423,31 @@ public final class StarcoreClient implements AutoCloseable {
         if (System.nanoTime() - lastReceived > TimeUnit.SECONDS.toNanos(35)) { connection.close(); return; }
         try { connection.send(Wire.frame("ping", null)); } catch (IOException ignored) { }
     }
-    private void clearRuntimes() { for (Runtime r : runtimes.values()) r.process.destroy(); runtimes.clear(); }
+    private void clearRuntimes() { for (Runtime r : liveRuntimes) r.process.destroy(); runtimes.clear(); }
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        FramedConnection c = link; if (c != null) c.close(); clearObservations(); observationWorkers.shutdownNow(); clearRuntimes(); timer.shutdownNow(); lifecycle.shutdownNow(); resourceWorker.shutdownNow();
-        try { identityLock.release(); identityChannel.close(); } catch (IOException ignored) { }
+        FramedConnection c = link; if (c != null) c.close(); failSessionRequests(); clearObservations(); observationWorkers.shutdownNow(); clearRuntimes(); timer.shutdownNow(); lifecycle.shutdownNow(); resourceWorker.shutdownNow(); sessionWorker.shutdownNow();
+        // Keep the data-directory lock until old runtimes have finished their final snapshot writes.
+        Runtime[] finishing = liveRuntimes.toArray(new Runtime[0]);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5); boolean finished = true;
+        for (Runtime runtime : finishing) try {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0 || !runtime.process.waitFor(remaining, TimeUnit.NANOSECONDS)) { finished = false; break; }
+        } catch (InterruptedException e) { Thread.currentThread().interrupt(); finished = false; break; }
+        if (finished) releaseIdentity();
+        else FramedConnection.daemon("session-writer-shutdown", () -> {
+            try { for (Runtime runtime : finishing) runtime.process.waitFor(); releaseIdentity(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
         setState(State.CLOSED);
     }
-    private static final class Runtime { final EmbeddedAgentRuntime process; Runtime(EmbeddedAgentRuntime p) { process = p; } }
+    private void releaseIdentity() { try { identityLock.release(); identityChannel.close(); } catch (IOException ignored) { } }
+    private static final class Runtime {
+        final String id; final EmbeddedAgentRuntime process;
+        final ConcurrentMap<String, JsonObject> requests = new ConcurrentHashMap<>();
+        final Set<String> loaded = ConcurrentHashMap.newKeySet();
+        Runtime(String id, EmbeddedAgentRuntime p) { this.id = id; process = p; }
+    }
     public static final class Builder {
         private URI url; private String name, accessToken = "";
         private Path workspace = Paths.get(System.getProperty("user.dir")), dataDirectory;

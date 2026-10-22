@@ -6,6 +6,21 @@ import java.net.*;
 import java.util.concurrent.*;
 import static org.junit.Assert.*;
 public class ResourceChunkTest {
+    @Test(timeout=15000) public void sessionSnapshotsUseSeparateChunkQueueAndPreserveHeartbeat() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 2, InetAddress.getLoopbackAddress());
+             Socket outgoing = new Socket("127.0.0.1", listener.getLocalPort()); Socket incoming = listener.accept();
+             FramedConnection sender = new FramedConnection(outgoing); FramedConnection receiver = new FramedConnection(incoming)) {
+            incoming.setSoTimeout(10000);
+            JsonObject frame = Wire.frame("sessions_request", null); frame.addProperty("data", new String(new char[1200000]).replace('\0', 'x'));
+            ExecutorService worker = Executors.newSingleThreadExecutor();
+            try {
+                Future<?> sent = worker.submit(() -> { try { sender.send(frame); } catch (Exception e) { throw new RuntimeException(e); } });
+                sender.send(Wire.frame("ping", null)); boolean snapshot = false, ping = false;
+                while (!snapshot || !ping) { JsonObject value = receiver.read(); if (Wire.str(value, "type").equals("ping")) ping = true; else { assertEquals(frame, value); snapshot = true; } }
+                sent.get(2, TimeUnit.SECONDS);
+            } finally { worker.shutdownNow(); }
+        }
+    }
     @Test(timeout=10000) public void observationCancellationCannotOvertakeChunkedExecution() throws Exception {
         try (ServerSocket listener = new ServerSocket(0, 2, InetAddress.getLoopbackAddress());
              Socket outgoing = new Socket("127.0.0.1", listener.getLocalPort()); Socket incoming = listener.accept();

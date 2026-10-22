@@ -72,3 +72,5 @@ body{padding-bottom:28px}.app-bar{align-items:center;gap:10px}.app-bar-actions{f
 @media(max-width:700px){.env-trigger{width:34px;height:34px;min-height:34px}}
 @media(max-width:520px){.app-bar-identity{flex:1;min-width:0}.brand-copy{min-width:0}.brand-copy h1{white-space:nowrap}.env-picker{padding-right:8px}.env-menu{right:8px}.app-bar{gap:6px}}
 @media(max-width:380px){.app-bar{padding-left:8px;padding-right:8px;gap:4px}.brand{gap:6px}.brand-mark{width:32px;height:32px}.brand-copy h1{font-size:14px}.app-bar-actions{gap:1px}.env-trigger{width:30px;height:30px;min-height:30px}.env-menu{width:calc(100vw - 16px)}.app-bar-actions .btn{width:30px;height:30px;min-height:30px}}
+
+@media(max-width:860px){.session-sidebar-resize{display:none}.team-session-dialog .session-layout{grid-template-columns:1fr}}

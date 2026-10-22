@@ -52,16 +52,16 @@ test('local, same-host and registered environments share the selected style with
         {instanceId:'registered',self:false,remote:true,online:true,home:'我的电脑',displayName:'我的电脑',sourceInstanceId:'source',configUiPort:20000}
     ];
     for(const current of environments){
-        const tabs={innerHTML:''},trigger={title:''};
+        const tabs={innerHTML:''},trigger={title:'',setAttribute(){}};
         const context=vm.createContext({instances:environments,curInstance:current,envName:i=>i.displayName,esc:String,syncEnvironmentGate(){},
-            document:{getElementById:id=>{assert.ok(['envTabs','envTrigger'].includes(id));return id==='envTabs'?tabs:trigger;}}});
+            document:{getElementById:id=>{assert.ok(['envTabs','envTrigger','envTriggerName'].includes(id));return id==='envTriggerName'?null:id==='envTabs'?tabs:trigger;}}});
         vm.runInContext(coreSection('function renderEnvTabs(', 'async function switchInstance('),context);
         context.renderEnvTabs();
         assert.equal((tabs.innerHTML.match(/class="env-tab active"/g)||[]).length,1);
         assert.equal((tabs.innerHTML.match(/aria-current="true"/g)||[]).length,1);
         assert.ok(!/class="env-tab[^"]*remote/.test(tabs.innerHTML));
         assert.ok(!tabs.innerHTML.includes('正在编辑'));
-        assert.equal(trigger.title,'当前环境：'+current.displayName+'；点击切换运行环境');
+        assert.equal(trigger.title,'当前环境：'+(current.self?'本机':current.displayName)+'；点击切换运行环境');
     }
 });
 test('both themes retain normal selection styles and omit remote warning styles and markup', () => {
@@ -164,6 +164,7 @@ test('background connection errors remain readable without displaying raw Englis
 test('password is optional at registration and can be saved or explicitly removed', async () => {
     const calls=[];
     const h=harness(async(url,options)=>{if(options.body)calls.push(JSON.parse(options.body));return{ok:true,json:async()=>({accessPasswordSet:true})}});
+    h.context.registryRawFetch=async()=>({ok:true});
     h.get('registryCenterUrl').value='10.0.0.1:10528';h.get('registryAccessPassword').value='secret';
     await h.context.registerEnvironment();assert.equal(calls[0].accessPassword,'secret');
     assert.equal(h.get('registryAccessPassword').value,'');assert.match(h.get('registryAccessPassword').placeholder,/已设置/);
@@ -236,4 +237,22 @@ test('access cache never extends beyond the server ticket expiry',async()=>{
     const win={location:{href:'https://center.example/',origin:'https://center.example'},fetch:async url=>{if(url.startsWith('/api/registry/access'))checks++;return new Response('{"authenticated":true,"expiresAt":2000}');}};
     harness(()=>{}, {window:win,Date:{now:()=>now}});await win.fetch('/api/config?instance=remote-a');
     now=2001;await win.fetch('/api/config?instance=remote-a');assert.equal(checks,2);
+});
+
+for(const query of ['', '?instance=local'])test('local requests require password authentication '+query, async()=>{
+    const calls=[];
+    const win={location:{href:'https://center.example/',origin:'https://center.example'},fetch:async(url)=>{
+        calls.push(url);return new Response(JSON.stringify({authenticated:false,passwordRequired:true}),{status:200});
+    }};
+    const h=harness(()=>{}, {window:win});
+    const waiting=win.fetch('/api/config'+query);
+    await new Promise(setImmediate);
+    assert.equal(calls.length,1);assert.ok(calls[0].startsWith('/api/registry/access'));
+    assert.ok(h.context.registryAccessPrompt);
+    h.context.finishRegistryAccess(false);
+    assert.equal((await waiting).status,401);assert.equal(calls.length,1);
+});
+test('instance discovery remains accessible before local login',async()=>{
+    const calls=[];const win={location:{href:'https://center.example/',origin:'https://center.example'},fetch:async(url)=>{calls.push(url);return new Response('[]')}};
+    harness(()=>{}, {window:win});await win.fetch('/api/instances');assert.deepEqual(calls,['/api/instances']);
 });

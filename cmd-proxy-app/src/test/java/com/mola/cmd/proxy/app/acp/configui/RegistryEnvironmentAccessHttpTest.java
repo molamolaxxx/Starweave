@@ -35,10 +35,31 @@ public class RegistryEnvironmentAccessHttpTest {
         center.createContext("/", exchange -> proxy.forward(exchange, target.getBoundPort())); center.start();
         String base = "http://127.0.0.1:" + center.getAddress().getPort();
         try {
-            for (String path : new String[]{"/api/config", "/api/starweave/v1/sessions", "/api/registry/settings", "/api/starweave/v1/sessions/resources/download"}) {
+            for (String path : new String[]{"/api/config", "/api/starweave/v1/sessions", "/api/registry/settings", "/api/starweave/v1/sessions/resources/download", "/api/starweave/v1/sessions/stream", "/api/starweave/v1/teams/stream"}) {
                 try (Response response = browser.newCall(new Request.Builder().url(base + path + "?instance=remote-test").build()).execute()) {
                     assertEquals(path, 401, response.code()); assertTrue(response.body().string().contains("ENVIRONMENT_LOCKED"));
                 }
+            }
+            String direct = "http://127.0.0.1:" + target.getBoundPort();
+            for (String path : new String[]{"/api/config", "/api/registry/settings", "/api/starweave/v1/sessions", "/api/starweave/v1/sessions/resources/download", "/api/starweave/v1/sessions/stream", "/api/starweave/v1/teams/stream"}) {
+                try (Response response = browser.newCall(new Request.Builder().url(direct + path).build()).execute()) {
+                    assertEquals("direct " + path, 401, response.code());
+                }
+            }
+            try (Response response = browser.newCall(new Request.Builder().url(direct + "/api/config?instance=" + com.mola.cmd.proxy.app.utils.CmdProxyHome.instanceId())
+                    .header("X-Cmd-Proxy-Proxied", "1").build()).execute()) {
+                assertEquals("explicit local identity and proxy header cannot bypass password", 401, response.code());
+            }
+            try (Response response = browser.newCall(new Request.Builder().url(direct + "/api/registry/access")
+                    .post(RequestBody.create(MediaType.parse("application/json"), "{\"password\":\"wrong\"}")).build()).execute()) {
+                assertEquals("wrong local password", 401, response.code());
+            }
+            try (Response response = browser.newCall(new Request.Builder().url(direct + "/api/registry/settings")
+                    .post(RequestBody.create(MediaType.parse("application/json"), "{\"accessPassword\":\"\"}")).build()).execute()) {
+                assertEquals("anonymous cannot remove local password", 401, response.code());
+            }
+            try (Response response = browser.newCall(new Request.Builder().url(direct + "/api/registry/access").build()).execute()) {
+                assertTrue(response.body().string().contains("\"authenticated\":false"));
             }
             try (Response response = browser.newCall(login(base, "wrong")).execute()) {
                 assertEquals(401, response.code()); assertNull(response.header("Set-Cookie"));
@@ -52,6 +73,10 @@ public class RegistryEnvironmentAccessHttpTest {
                 assertEquals(200, response.code()); cookie = response.header("Set-Cookie");
                 assertTrue(cookie.contains("Max-Age=604800")); assertTrue(cookie.contains("HttpOnly"));
                 assertTrue(cookie.contains("SameSite=Strict")); cookie = cookie.split(";", 2)[0];
+            }
+            try (Response response = browser.newCall(new Request.Builder().url(direct + "/api/registry/settings").header("Cookie", cookie).build()).execute()) {
+                assertEquals("local login permits local settings", 200, response.code());
+                String settings = response.body().string(); assertFalse(settings.contains("accessPasswordHash")); assertFalse(settings.contains("accessSessionKey"));
             }
             Request request = new Request.Builder().url(base + "/api/starweave/v1/sessions?instance=remote-test").header("Cookie", cookie).build();
             try (Response response = browser.newCall(request).execute()) { assertEquals(200, response.code()); }

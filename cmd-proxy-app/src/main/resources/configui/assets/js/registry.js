@@ -46,7 +46,12 @@ if(!registryActionAvailable())return;
 registryBusy=true;renderRegistryStatus();var environment=(curInstance&&curInstance.instanceId)||'';
 try{var result=await registryRequest({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});
 if(environment!==((curInstance&&curInstance.instanceId)||''))return;
-registryState=result;showSnackbar(Object.prototype.hasOwnProperty.call(values,'accessPassword')?(values.accessPassword?'环境密码已保存，已有登录需重新验证':'已移除环境密码'):values.clientEnabled===true?'注册设置已保存，正在连接中心':values.clientEnabled===false?'已取消注册':values.serverEnabled?'中心设置已保存，正在准备接入服务':'已关闭注册中心');
+registryState=result;
+if(Object.prototype.hasOwnProperty.call(values,'accessPassword')){
+var accessId=environment||'@local';delete registryAccessVerifiedUntil[accessId];delete registryAccessVerifiedUntil['@local'];
+if(values.accessPassword){var login=await registryAccessRequest(accessId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:values.accessPassword})});if(!login.ok)throw new Error('密码已保存，请重新验证后进入');registryAccessVerifiedUntil[accessId]=Date.now()+30000}
+}
+showSnackbar(Object.prototype.hasOwnProperty.call(values,'accessPassword')?(values.accessPassword?'环境密码已保存，已有登录需重新验证':'已移除环境密码'):values.clientEnabled===true?'注册设置已保存，正在连接中心':values.clientEnabled===false?'已取消注册':values.serverEnabled?'中心设置已保存，正在准备接入服务':'已关闭注册中心');
 await loadRegistrySettings(true);
 }catch(e){if(environment===((curInstance&&curInstance.instanceId)||'')){showSnackbar(registryFriendlyError(e));document.getElementById('registryServerEnabled').checked=!!registryState.serverEnabled}}
 finally{registryBusy=false;renderRegistryStatus()}
@@ -83,10 +88,10 @@ var registryAccessChecks={},registryAccessVerifiedUntil={},registryAccessPrompt=
 var registryRawFetch=typeof window!=='undefined'&&window.fetch?window.fetch.bind(window):null;
 async function registryAccessRequest(id,options){
 var controller=new AbortController(),timer=setTimeout(function(){controller.abort()},15000);
-try{return await registryRawFetch('/api/registry/access?instance='+encodeURIComponent(id),Object.assign({},options,{credentials:'same-origin',signal:controller.signal}))}finally{clearTimeout(timer)}
+try{return await registryRawFetch('/api/registry/access'+(id&&id!=='@local'?'?instance='+encodeURIComponent(id):''),Object.assign({},options,{credentials:'same-origin',signal:controller.signal}))}finally{clearTimeout(timer)}
 }
 function ensureRegistryEnvironmentAccess(id,force){
-if(!id||id.indexOf('remote-')!==0)return Promise.resolve(true);
+id=id||'@local';
 if(!force&&registryAccessVerifiedUntil[id]>Date.now())return Promise.resolve(true);
 if(registryAccessChecks[id])return registryAccessChecks[id];
 var check=(async function(){
@@ -103,7 +108,7 @@ function promptRegistryEnvironmentAccess(id){
 if(registryAccessPrompt)return registryAccessPrompt.id===id?registryAccessPrompt.promise:Promise.resolve(false);
 var resolve,promise=new Promise(function(done){resolve=done});registryAccessPrompt={id:id,resolve:resolve,promise:promise,busy:false};
 var environment=instances.filter(function(item){return item.instanceId===id})[0];
-document.getElementById('registryAccessName').textContent='请输入“'+(environment?envName(environment):'远程环境')+'”的访问密码';
+document.getElementById('registryAccessName').textContent='请输入“'+(environment?(environment.self?'本机':envName(environment)):'本机')+'”的访问密码';
 document.getElementById('registryLoginPassword').value='';document.getElementById('registryAccessError').textContent='';document.getElementById('registryAccessSubmit').disabled=false;
 showDialog('registryAccessDialog');document.getElementById('registryLoginPassword').focus();return promise;
 }
@@ -123,11 +128,11 @@ showSnackbar('验证成功，此浏览器 7 天内无需重复输入密码');fin
 }catch(e){if(registryAccessPrompt===prompt)document.getElementById('registryAccessError').textContent=registryFriendlyError(e)}
 finally{prompt.busy=false;document.getElementById('registryAccessSubmit').textContent='验证并进入'}
 }
-// 所有带远程环境标识的 fetch 请求先验证，包括聊天、附件上传和文件预览。
+// 本机与远程环境的业务请求均先验证，包括聊天、附件上传和文件预览。
 if(registryRawFetch)window.fetch=async function(resource,options){
 var url;try{url=new URL(typeof resource==='string'?resource:resource.url,window.location.href)}catch(e){return registryRawFetch(resource,options)}
-var id=url.searchParams.get('instance');
-if(url.origin===window.location.origin&&url.pathname.indexOf('/api/')===0&&url.pathname!=='/api/registry/access'&&id&&id.indexOf('remote-')===0){
+var id=url.searchParams.get('instance')||'@local';
+if(url.origin===window.location.origin&&url.pathname.indexOf('/api/')===0&&url.pathname!=='/api/registry/access'&&url.pathname!=='/api/instances'){
 var method=String(options&&options.method||resource&&resource.method||'GET').toUpperCase();
 if(!await ensureRegistryEnvironmentAccess(id,method!=='GET'&&method!=='HEAD'))return new Response(JSON.stringify({accepted:false,code:'ENVIRONMENT_LOCKED',message:'尚未验证环境密码，操作未执行',error:'尚未验证环境密码，操作未执行'}),{status:401,headers:{'Content-Type':'application/json'}});
 }
@@ -141,7 +146,7 @@ if(typeof document.addEventListener==='function')document.addEventListener('keyd
 if(typeof document.addEventListener==='function')document.addEventListener('click',function(event){
 var link=event.target.closest&&event.target.closest('a[href]');if(!link||event.defaultPrevented)return;
 var url;try{url=new URL(link.href,window.location.href)}catch(e){return}
-var id=url.searchParams.get('instance');
-if(url.origin!==window.location.origin||url.pathname.indexOf('/api/')!==0||!id||id.indexOf('remote-')!==0)return;
+var id=url.searchParams.get('instance')||'@local';
+if(url.origin!==window.location.origin||url.pathname.indexOf('/api/')!==0||url.pathname==='/api/registry/access'||url.pathname==='/api/instances')return;
 event.preventDefault();ensureRegistryEnvironmentAccess(id).then(function(allowed){if(allowed)window.location.assign(url.href)});
 });

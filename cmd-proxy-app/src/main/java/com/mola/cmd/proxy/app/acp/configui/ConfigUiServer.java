@@ -246,139 +246,139 @@ public class ConfigUiServer {
         server.setExecutor(executor);
 
         // ConfigUI 自带静态资源。仅暴露明确登记的资源，避免把 classpath 变成文件服务。
-        server.createContext("/assets/", this::handleStaticAsset);
+        createProtectedContext("/assets/", this::handleStaticAsset);
         // 静态页面
-        server.createContext("/", this::handleIndex);
+        createProtectedContext("/", this::handleIndex);
         // 环境列表（不代理，始终由本进程扫描主机级注册表）
-        server.createContext("/api/instances", this::handleInstances);
+        createProtectedContext("/api/instances", this::handleInstances);
         registryManager = createRegistryManager(server.getAddress().getPort());
         teamCoordinator = new com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator(
                 registryManager, registryManager.coordinationDirectory());
-        server.createContext(com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator.CENTER_PATH,
+        createProtectedContext(com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator.CENTER_PATH,
                 teamCoordinator::handleCenter);
-        server.createContext(com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator.PARTICIPANT_PATH,
+        createProtectedContext(com.mola.cmd.proxy.app.acp.team.coordinator.RegistryTeamCoordinator.PARTICIPANT_PATH,
                 teamCoordinator::handleParticipant);
         // 注册控制属于接收进程；系统设置操作跟随当前选中的环境。
-        server.createContext("/api/registry/", registryManager::handleControl);
-        server.createContext("/api/registry/access", proxied(registryManager::handleAccess));
-        server.createContext("/api/registry/settings", proxied(registryManager::handleAdmin));
+        createProtectedContext("/api/registry/", registryManager::handleControl);
+        createProtectedContext("/api/registry/access", proxied(registryManager::handleAccess));
+        createProtectedContext("/api/registry/settings", proxied(registryManager::handleAdmin));
         // Public endpoint: authentication is handled by its configured Bearer code.
         // Deliberately do not proxy by ConfigUI's instance query parameter.
-        server.createContext(ExternalTaskApiHandler.PREFIX,
+        createProtectedContext(ExternalTaskApiHandler.PREFIX,
                 new ExternalTaskApiHandler(new ExternalTaskApiService(
                         Paths.get(CONFIG_PATH), TaskApiBridge::getService)));
-        server.createContext(TaskRestHandler.PREFIX, proxied(this::handleTasks));
-        server.createContext("/api/schedules/v1/", proxied(this::handleSchedules));
-        server.createContext("/api/observations/v1/", proxied(this::handleObservations));
+        createProtectedContext(TaskRestHandler.PREFIX, proxied(this::handleTasks));
+        createProtectedContext("/api/schedules/v1/", proxied(this::handleSchedules));
+        createProtectedContext("/api/observations/v1/", proxied(this::handleObservations));
         // REST API：带 instance 参数且非本环境时，转发到目标环境的 ConfigUI
         remoteAcpManager = new com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager(Paths.get(CONFIG_PATH), refreshRobotCallback);
-        server.createContext("/api/remote-acp/discover", remoteAcpManager::handleDiscovery);
-        server.createContext("/api/remote-acp/mcp/", remoteAcpManager::handleMcp);
-        server.createContext("/api/remote-acp/status", proxied(remoteAcpManager::handleStatus));
-        server.createContext("/api/remote-acp/resource-conflicts", proxied(remoteAcpManager::handleResourceConflicts));
-        server.createContext("/api/config", proxied(this::handleConfig));
-        server.createContext("/api/channels/status", proxied(this::handleChannelStatus));
-        server.createContext("/api/channels/inbound", proxied(this::handleChannelInbound));
-        server.createContext("/api/channels/private-chat",
+        createProtectedContext("/api/remote-acp/discover", remoteAcpManager::handleDiscovery);
+        createProtectedContext("/api/remote-acp/mcp/", remoteAcpManager::handleMcp);
+        createProtectedContext("/api/remote-acp/status", proxied(remoteAcpManager::handleStatus));
+        createProtectedContext("/api/remote-acp/resource-conflicts", proxied(remoteAcpManager::handleResourceConflicts));
+        createProtectedContext("/api/config", proxied(this::handleConfig));
+        createProtectedContext("/api/channels/status", proxied(this::handleChannelStatus));
+        createProtectedContext("/api/channels/inbound", proxied(this::handleChannelInbound));
+        createProtectedContext("/api/channels/private-chat",
                 proxied(this::handleChannelPrivateChat));
-        server.createContext("/api/channels/binding-targets",
+        createProtectedContext("/api/channels/binding-targets",
                 proxied(this::handleChannelBindingTargets));
-        server.createContext("/api/agent-gateways/targets",
+        createProtectedContext("/api/agent-gateways/targets",
                 proxied(this::handleAgentGatewayTargets));
-        server.createContext("/api/agent-gateways/status",
+        createProtectedContext("/api/agent-gateways/status",
                 proxied(this::handleAgentGatewayStatus));
-        server.createContext("/api/agent-gateways/auth-code",
+        createProtectedContext("/api/agent-gateways/auth-code",
                 proxied(this::handleAgentGatewayAuthCode));
-        server.createContext("/api/channels/v1/messages",
+        createProtectedContext("/api/channels/v1/messages",
                 proxied(this::handleChannelMessages));
-        server.createContext("/api/external-task-apis/auth-code",
+        createProtectedContext("/api/external-task-apis/auth-code",
                 proxied(this::handleExternalTaskApiAuthCode));
-        server.createContext("/api/team/sharing-status",
+        createProtectedContext("/api/team/sharing-status",
                 proxied(this::handleTeamSharingStatus));
-        server.createContext("/api/mcp-auth/v1/servers", proxied(this::handleMcpServers));
-        server.createContext("/api/mcp-auth/v1/principals", proxied(this::handleMcpPrincipals));
-        server.createContext("/api/mcp-auth/v1/policies", proxied(this::handleMcpPolicies));
-        server.createContext("/api/refresh", proxied(this::handleRefresh));
-        server.createContext("/api/refresh-robot", proxied(this::handleRefreshRobot));
-        server.createContext("/api/refresh-channel", proxied(this::handleRefreshChannel));
-        server.createContext("/api/item-refresh-status",
+        createProtectedContext("/api/mcp-auth/v1/servers", proxied(this::handleMcpServers));
+        createProtectedContext("/api/mcp-auth/v1/principals", proxied(this::handleMcpPrincipals));
+        createProtectedContext("/api/mcp-auth/v1/policies", proxied(this::handleMcpPolicies));
+        createProtectedContext("/api/refresh", proxied(this::handleRefresh));
+        createProtectedContext("/api/refresh-robot", proxied(this::handleRefreshRobot));
+        createProtectedContext("/api/refresh-channel", proxied(this::handleRefreshChannel));
+        createProtectedContext("/api/item-refresh-status",
                 proxied(this::handleItemRefreshStatus));
-        server.createContext("/api/browse-dir", proxied(this::handleBrowseDir));
-        server.createContext("/api/agent-resources/export",
+        createProtectedContext("/api/browse-dir", proxied(this::handleBrowseDir));
+        createProtectedContext("/api/agent-resources/export",
                 proxied(exchange -> handleAgentResourceMigration(exchange, false)));
-        server.createContext("/api/agent-resources/import",
+        createProtectedContext("/api/agent-resources/import",
                 proxied(exchange -> handleAgentResourceMigration(exchange, true)));
-        server.createContext("/api/agent-resources/tree",
+        createProtectedContext("/api/agent-resources/tree",
                 proxied(this::handleAgentResourceTree));
-        server.createContext("/api/agent-resources/content",
+        createProtectedContext("/api/agent-resources/content",
                 proxied(this::handleAgentResourceContent));
-        server.createContext("/api/agent-resources/dream",
+        createProtectedContext("/api/agent-resources/dream",
                 proxied(this::handleAgentMemoryDream));
-        server.createContext("/api/starweave/v1/sessions",
+        createProtectedContext("/api/starweave/v1/sessions",
                 proxied(this::handleStarweaveSessions));
-        server.createContext("/api/starweave/v1/sessions/open",
+        createProtectedContext("/api/starweave/v1/sessions/open",
                 proxied(exchange -> handleStarweaveCommand(exchange, "open")));
-        server.createContext("/api/starweave/v1/sessions/messages",
+        createProtectedContext("/api/starweave/v1/sessions/messages",
                 proxied(exchange -> handleStarweaveCommand(exchange, "messages")));
-        server.createContext("/api/starweave/v1/sessions/uploads",
+        createProtectedContext("/api/starweave/v1/sessions/uploads",
                 proxied(this::handleStarweaveUpload));
-        server.createContext("/api/starweave/v1/sessions/resources",
+        createProtectedContext("/api/starweave/v1/sessions/resources",
                 proxied(exchange -> handleStarweaveResources(exchange, "list")));
-        server.createContext("/api/starweave/v1/sessions/resources/preview",
+        createProtectedContext("/api/starweave/v1/sessions/resources/preview",
                 proxied(exchange -> handleStarweaveResources(exchange, "preview")));
-        server.createContext("/api/starweave/v1/sessions/resources/download",
+        createProtectedContext("/api/starweave/v1/sessions/resources/download",
                 proxied(exchange -> handleStarweaveResources(exchange, "download")));
-        server.createContext("/api/starweave/v1/sessions/file-preview",
+        createProtectedContext("/api/starweave/v1/sessions/file-preview",
                 proxied(exchange -> handleStarweaveFilePreview(exchange, false)));
-        server.createContext("/api/starweave/v1/sessions/cancel",
+        createProtectedContext("/api/starweave/v1/sessions/cancel",
                 proxied(exchange -> handleStarweaveCommand(exchange, "cancel")));
-        server.createContext("/api/starweave/v1/sessions/new",
+        createProtectedContext("/api/starweave/v1/sessions/new",
                 proxied(exchange -> handleStarweaveCommand(exchange, "new")));
-        server.createContext("/api/starweave/v1/sessions/restore",
+        createProtectedContext("/api/starweave/v1/sessions/restore",
                 proxied(exchange -> handleStarweaveCommand(exchange, "restore")));
-        server.createContext("/api/starweave/v1/sessions/delete",
+        createProtectedContext("/api/starweave/v1/sessions/delete",
                 proxied(exchange -> handleStarweaveCommand(exchange, "delete")));
-        server.createContext("/api/starweave/v1/sessions/events",
+        createProtectedContext("/api/starweave/v1/sessions/events",
                 proxied(this::handleStarweaveEvents));
-        server.createContext("/api/starweave/v1/sessions/stream",
+        createProtectedContext("/api/starweave/v1/sessions/stream",
                 this::handleStarweaveStream);
-        server.createContext("/api/starweave/v1/teams",
+        createProtectedContext("/api/starweave/v1/teams",
                 proxied(exchange -> handleStarweaveTeams(exchange, "list")));
-        server.createContext("/api/starweave/v1/teams/sources",
+        createProtectedContext("/api/starweave/v1/teams/sources",
                 proxied(exchange -> handleStarweaveTeams(exchange, "sources")));
-        server.createContext("/api/starweave/v1/teams/create",
+        createProtectedContext("/api/starweave/v1/teams/create",
                 proxied(exchange -> handleStarweaveTeams(exchange, "create")));
-        server.createContext("/api/starweave/v1/teams/update",
+        createProtectedContext("/api/starweave/v1/teams/update",
                 proxied(exchange -> handleStarweaveTeams(exchange, "update")));
-        server.createContext("/api/starweave/v1/teams/delete",
+        createProtectedContext("/api/starweave/v1/teams/delete",
                 proxied(exchange -> handleStarweaveTeams(exchange, "delete")));
-        server.createContext("/api/starweave/v1/teams/member",
+        createProtectedContext("/api/starweave/v1/teams/member",
                 proxied(exchange -> handleStarweaveTeams(exchange, "member")));
-        server.createContext("/api/starweave/v1/teams/uploads",
+        createProtectedContext("/api/starweave/v1/teams/uploads",
                 proxied(exchange -> handleStarweaveTeams(exchange, "upload")));
-        server.createContext("/api/starweave/v1/teams/events",
+        createProtectedContext("/api/starweave/v1/teams/events",
                 proxied(exchange -> handleStarweaveTeams(exchange, "events")));
-        server.createContext("/api/starweave/v1/teams/stream",
+        createProtectedContext("/api/starweave/v1/teams/stream",
                 this::handleStarweaveTeamStream);
-        server.createContext("/api/starweave/v1/teams/resources",
+        createProtectedContext("/api/starweave/v1/teams/resources",
                 proxied(exchange -> handleStarweaveTeamResources(exchange, "list")));
-        server.createContext("/api/starweave/v1/teams/resources/preview",
+        createProtectedContext("/api/starweave/v1/teams/resources/preview",
                 proxied(exchange -> handleStarweaveTeamResources(exchange, "preview")));
-        server.createContext("/api/starweave/v1/teams/resources/download",
+        createProtectedContext("/api/starweave/v1/teams/resources/download",
                 proxied(exchange -> handleStarweaveTeamResources(exchange, "download")));
-        server.createContext("/api/starweave/v1/teams/file-preview",
+        createProtectedContext("/api/starweave/v1/teams/file-preview",
                 proxied(exchange -> handleStarweaveFilePreview(exchange, true)));
-        server.createContext("/api/update-jar", proxied(this::handleUpdateJar));
-        server.createContext("/api/update-jar/status", proxied(this::handleUpdateJarStatus));
-        server.createContext("/api/provider-runtime/releases",
+        createProtectedContext("/api/update-jar", proxied(this::handleUpdateJar));
+        createProtectedContext("/api/update-jar/status", proxied(this::handleUpdateJarStatus));
+        createProtectedContext("/api/provider-runtime/releases",
                 proxied(this::handleProviderRuntimeReleases));
-        server.createContext("/api/provider-runtime/status",
+        createProtectedContext("/api/provider-runtime/status",
                 proxied(this::handleProviderRuntimeStatus));
-        server.createContext("/api/provider-runtime/install",
+        createProtectedContext("/api/provider-runtime/install",
                 proxied(this::handleProviderRuntimeInstall));
-        server.createContext("/api/provider-runtime/job",
+        createProtectedContext("/api/provider-runtime/job",
                 proxied(this::handleProviderRuntimeJob));
-        server.createContext("/api/provider-models",
+        createProtectedContext("/api/provider-models",
                 proxied(this::handleProviderModels));
 
         server.start();
@@ -395,6 +395,14 @@ public class ConfigUiServer {
                 UPDATE_CHECK_INTERVAL_MINUTES,
                 TimeUnit.MINUTES);
         logger.info("ConfigUI 已启动: http://localhost:{}", port);
+    }
+
+    /** Apply to every route, including handlers that send files or retain SSE exchanges. */
+    private void createProtectedContext(String path, com.sun.net.httpserver.HttpHandler handler) {
+        server.createContext(path, exchange -> {
+            FrameProtectionHeaders.apply(exchange);
+            handler.handle(exchange);
+        });
     }
 
     private void handleMcpRegister(HttpExchange exchange) throws IOException {
@@ -505,7 +513,7 @@ public class ConfigUiServer {
             boolean alreadyProxied = exchange.getRequestHeaders().getFirst(PROXY_HEADER) != null;
             if (target == null || target.isEmpty() || alreadyProxied
                     || target.equals(CmdProxyHome.instanceId())) {
-                if (alreadyProxied && !exchange.getRequestURI().getPath().equals("/api/registry/access")
+                if (!exchange.getRequestURI().getPath().equals("/api/registry/access")
                         && !registryManager.allowEnvironmentAccess(exchange)) return;
                 local.handle(exchange);
                 return;
@@ -1353,6 +1361,10 @@ public class ConfigUiServer {
      */
     private void handleStarweaveStream(HttpExchange exchange) throws IOException {
         if (!allowStarweaveOrigin(exchange)) return;
+        String accessTarget = param(exchange, "instance");
+        if ((accessTarget == null || accessTarget.isEmpty() || accessTarget.equals(CmdProxyHome.instanceId())
+                || exchange.getRequestHeaders().getFirst(PROXY_HEADER) != null)
+                && !registryManager.allowEnvironmentAccess(exchange)) return;
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
             sendResponse(exchange, 405, "text/plain", "Method Not Allowed");
             return;
@@ -1686,6 +1698,10 @@ public class ConfigUiServer {
     /** Team sessions use the same immediate, bounded SSE delivery as normal sessions. */
     private void handleStarweaveTeamStream(HttpExchange exchange) throws IOException {
         if (!allowStarweaveOrigin(exchange)) return;
+        String accessTarget = param(exchange, "instance");
+        if ((accessTarget == null || accessTarget.isEmpty() || accessTarget.equals(CmdProxyHome.instanceId())
+                || exchange.getRequestHeaders().getFirst(PROXY_HEADER) != null)
+                && !registryManager.allowEnvironmentAccess(exchange)) return;
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
             sendResponse(exchange, 405, "text/plain", "Method Not Allowed");
             return;

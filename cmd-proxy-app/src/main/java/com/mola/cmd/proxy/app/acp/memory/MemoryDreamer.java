@@ -253,15 +253,16 @@ public class MemoryDreamer {
                             if (entry.getId().equals(action.getId())) {
                                 // detail 不存储在索引中。即使 Dream 只更新 summary/title，
                                 // 写回前也必须从明细文件恢复旧正文，避免被 summary 覆盖。
-                                entry.setDetail(fileStore.readDetailBody(entry));
-                                Map<String, String> fields = action.getFields();
-                                if (fields.containsKey("detail")) entry.setDetail(fields.get("detail"));
-                                if (fields.containsKey("summary")) entry.setSummary(fields.get("summary"));
-                                if (fields.containsKey("title")) entry.setTitle(fields.get("title"));
-                                entry.setUpdatedAt(now);
-                                fileStore.writeDetail(workspacePath, entry);
+                                fileStore.updateMemory(workspacePath, index, entry, next -> {
+                                    Map<String, String> fields = action.getFields();
+                                    if (fields.containsKey("detail")) next.setDetail(fields.get("detail"));
+                                    if (fields.containsKey("summary")) next.setSummary(fields.get("summary"));
+                                    if (fields.containsKey("title")) next.setTitle(fields.get("title"));
+                                    next.setUpdatedAt(now);
+                                });
                                 updated++;
-                                logger.info("[Dream UPDATE] id={}, title=\"{}\"", entry.getId(), entry.getTitle());
+                                logger.info("[Dream UPDATE] id={}, title=\"{}\"", entry.getId(),
+                                        action.getFields().getOrDefault("title", entry.getTitle()));
                                 break;
                             }
                         }
