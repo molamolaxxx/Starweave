@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<widget id="com.mola.starweave" version="1.0.7" android-versionCode="10007"
+<widget id="com.mola.starweave" version="1.0.9" android-versionCode="10009"
         xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android">
     <name>Starweave</name>
@@ -26,6 +26,6 @@
         <edit-config file="app/src/main/AndroidManifest.xml" mode="merge" target="/manifest/application">
             <application android:usesCleartextTraffic="true" android:allowBackup="false" />
         </edit-config>
-        <icon src="res/icon.png" />
+        <icon density="mdpi" src="res/icon.png" foreground="res/icon-foreground.xml" background="res/icon-background.xml" />
     </platform>
 </widget>

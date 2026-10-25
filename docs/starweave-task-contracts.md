@@ -1,5 +1,7 @@
 # Starweave Task 模块契约
 
+2026-10 任务池扩展、六个 MCP 工具及认领执行规则见 [任务池与任务 MCP](starweave-task-pool.md)。以下保留初版设计记录。
+
 2026-09-05 10:50 CST，T1 发布 v1 草案，T2/T3反馈、队长审查。唯一编辑人 T1。
 
 ## Java 服务

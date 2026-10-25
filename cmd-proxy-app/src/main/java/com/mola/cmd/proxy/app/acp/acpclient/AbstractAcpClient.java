@@ -808,6 +808,10 @@ public abstract class AbstractAcpClient implements Closeable {
             return;
         }
         JsonObject object = element.getAsJsonObject();
+        if (object.has("name") && object.get("name").isJsonPrimitive()
+                && isSensitiveJsonKey(object.get("name").getAsString()) && object.has("value")) {
+            object.addProperty("value", "[REDACTED]");
+        }
         for (Map.Entry<String, JsonElement> entry
                 : new ArrayList<>(object.entrySet())) {
             if (isSensitiveJsonKey(entry.getKey())) {

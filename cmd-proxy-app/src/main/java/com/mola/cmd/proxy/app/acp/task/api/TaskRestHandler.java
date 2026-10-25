@@ -26,10 +26,16 @@ public final class TaskRestHandler implements HttpHandler {
             }
             JSONObject data;
             if(suffix.equals("/attachments")&&method.equals("POST")){try(InputStream body=exchange.getRequestBody()){data=service.getAttachments().upload(query.getString("fileName"),exchange.getRequestHeaders().getFirst("Content-Type"),body);}}
+            else if(suffix.equals("/publish")&&method.equals("POST")){JSONObject request=body(exchange);if(request.getJSONObject("target")!=null)throw new TaskException("INVALID_ARGUMENT","Published tasks cannot specify a target",400);data=service.create(request);}
             else if(suffix.equals("/stats")&&method.equals("GET"))data=service.stats(query);
             else if(suffix.isEmpty()||suffix.equals("/")){if(method.equals("GET"))data=service.list(query);else if(method.equals("POST"))data=service.create(body(exchange));else throw method();}
             else {String[] parts=suffix.substring(1).split("/");String id=parts[0];
                 if(parts.length==1){if(method.equals("GET"))data=service.get(id,query);else if(method.equals("PATCH"))data=service.edit(id,body(exchange));else if(method.equals("DELETE"))data=service.delete(id,body(exchange));else throw method();}
+                else if(parts.length==2&&parts[1].equals("assign")&&method.equals("POST")){
+                    JSONObject request=body(exchange);com.mola.cmd.proxy.app.acp.task.dispatch.TaskTargetResolver resolver=TaskApiBridge.getResolver();
+                    data=service.assign(id,request,resolver.candidates(request.getJSONObject("target")),resolver.assignmentMode(request.getJSONObject("target")));
+                }
+                else if(parts.length==2&&parts[1].equals("derived")&&method.equals("GET"))data=service.derivedTasks(id,query);
                 else if(parts.length==2&&parts[1].equals("status")&&method.equals("POST"))data=service.updateStatus(id,body(exchange));
                 else if(parts.length==2&&parts[1].equals("comments")){if(method.equals("GET"))data=service.comments(id,query);else if(method.equals("POST"))data=service.addComment(id,body(exchange));else throw method();}
                 else if(parts.length==2&&parts[1].equals("history")&&method.equals("GET"))data=service.history(id,query);

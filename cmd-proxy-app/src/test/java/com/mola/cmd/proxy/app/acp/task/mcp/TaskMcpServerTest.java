@@ -49,7 +49,7 @@ public class TaskMcpServerTest {
     }
 
     @Test
-    public void initializesAndListsExactlyThreeToolsOverSse() throws Exception {
+    public void initializesAndListsSixToolsOverSse() throws Exception {
         JSONObject initialize = request(1, "initialize", new JSONObject(true));
         assertEquals(202, post(initialize));
         JSONObject initialized = nextMessage();
@@ -59,7 +59,7 @@ public class TaskMcpServerTest {
         assertEquals(202, post(request(2, "tools/list", new JSONObject(true))));
         JSONObject listed = nextMessage();
         com.alibaba.fastjson.JSONArray tools=listed.getJSONObject("result").getJSONArray("tools");
-        assertEquals(3, tools.size());
+        assertEquals(6, tools.size());
         JSONObject status=tools.getJSONObject(1).getJSONObject("inputSchema")
                 .getJSONObject("properties").getJSONObject("status");
         assertEquals(5,status.getJSONArray("enum").size());
@@ -96,7 +96,7 @@ public class TaskMcpServerTest {
             JSONObject initialized = httpPost(path, request(10, "initialize", new JSONObject()), 200, null);
             assertEquals(TaskMcpServer.HTTP_PROTOCOL_VERSION, initialized.getJSONObject("result").getString("protocolVersion"));
             JSONObject listed = httpPost(path, request(11, "tools/list", new JSONObject()), 200, null);
-            assertEquals(3, listed.getJSONObject("result").getJSONArray("tools").size());
+            assertEquals(6, listed.getJSONObject("result").getJSONArray("tools").size());
             JSONObject params = JSON.parseObject("{name:'get_task',arguments:{taskId:'one'}}");
             JSONObject called = httpPost(path, request(12, "tools/call", params), 200, null);
             assertFalse(called.getJSONObject("result").getBooleanValue("isError"));

@@ -32,6 +32,7 @@ public class RemoteAcpIntegrationTest {
     private Path config, workspace, data;
     private String base, previousMcp, previousHome;
     private final AtomicBoolean callMcp = new AtomicBoolean(), callJvm = new AtomicBoolean();
+    private final AtomicBoolean callTaskClaim = new AtomicBoolean();
     private final AtomicInteger jvmCalls = new AtomicInteger();
     private final AtomicReference<JsonObject> lastModelRequest = new AtomicReference<>();
     private final AtomicInteger actualToolCalls = new AtomicInteger();
@@ -62,6 +63,11 @@ public class RemoteAcpIntegrationTest {
                 message.remove("content"); JsonObject tool = new JsonObject(); tool.addProperty("id", "jvm-1"); tool.addProperty("type", "function");
                 JsonObject function = new JsonObject(); function.addProperty("name", "jvm_exec"); function.addProperty("arguments", "{\"script\":\"return counter.incrementAndGet()\"}"); tool.add("function", function);
                 JsonArray calls = new JsonArray(); calls.add(tool); message.add("tool_calls", calls); choice.addProperty("finish_reason", "tool_calls");
+            }
+            if (callTaskClaim.compareAndSet(true, false)) {
+                message.remove("content"); JsonObject tool=new JsonObject();tool.addProperty("id","claim-1");tool.addProperty("type","function");
+                JsonObject function=new JsonObject();function.addProperty("name","claim_task");function.addProperty("arguments","{\"requestId\":\"remote-claim\"}");tool.add("function",function);
+                JsonArray calls=new JsonArray();calls.add(tool);message.add("tool_calls",calls);choice.addProperty("finish_reason","tool_calls");
             }
             JsonObject result = new JsonObject(); JsonArray choices = new JsonArray(); choices.add(choice); result.add("choices", choices); respond(e, result);
         });
@@ -241,17 +247,41 @@ public class RemoteAcpIntegrationTest {
         // Stop writers before making conflicting offline versions.
         sdk.close(); until(() -> !RemoteAcpManager.online("test-remote"));
         Path local = data.resolve("java-sessions/" + session + ".json");
-        byte[] localBytes = Files.readAllBytes(local); JsonObject remote = JsonParser.parseString(new String(Files.readAllBytes(backup), StandardCharsets.UTF_8)).getAsJsonObject();
-        remote.addProperty("updatedAt", "central-change"); Files.write(backup, remote.toString().getBytes(StandardCharsets.UTF_8));
-        JsonObject changed = JsonParser.parseString(new String(localBytes, StandardCharsets.UTF_8)).getAsJsonObject(); changed.addProperty("updatedAt", "offline-change"); Files.write(local, changed.toString().getBytes(StandardCharsets.UTF_8));
+        // Disconnect does not join an exchange already inside SessionAuthority. Drain that
+        // writer through the same storage lock before constructing offline fixture versions.
+        java.util.concurrent.locks.ReentrantLock storageLock=com.mola.cmd.proxy.app.acp.memory.MemoryScopeLockRegistry.lockForStoragePath(backup.getParent());
+        storageLock.lock();
+        try {
+            byte[] localBytes = Files.readAllBytes(local); JsonObject remote = JsonParser.parseString(new String(Files.readAllBytes(backup), StandardCharsets.UTF_8)).getAsJsonObject();
+            remote.addProperty("updatedAt", "central-change"); Files.write(backup, remote.toString().getBytes(StandardCharsets.UTF_8));
+            JsonObject changed = JsonParser.parseString(new String(localBytes, StandardCharsets.UTF_8)).getAsJsonObject(); changed.addProperty("updatedAt", "offline-change"); Files.write(local, changed.toString().getBytes(StandardCharsets.UTF_8));
+        } finally { storageLock.unlock(); }
         sdk = StarcoreClient.builder().starweaveUrl(base).name("test-remote").workspace(workspace).dataDirectory(data).start(); assertTrue(sdk.awaitReady(10, TimeUnit.SECONDS));
         try (Client restore = new Client(robot(), false, session)) {
             try { restore.start(); fail("Conflicting context must not be selected silently"); }
             catch (IOException expected) { assertTrue(expected.getMessage(), expected.getMessage().contains("冲突")); }
         }
         assertTrue(new String(Files.readAllBytes(local), StandardCharsets.UTF_8).contains("offline-change"));
-        assertTrue(new String(Files.readAllBytes(backup), StandardCharsets.UTF_8).contains("central-change"));
+        String centralCopy=new String(Files.readAllBytes(backup),StandardCharsets.UTF_8);
+        assertTrue("Central snapshot updatedAt="+JsonParser.parseString(centralCopy).getAsJsonObject().get("updatedAt"),centralCopy.contains("central-change"));
         try (Client other = new Client(robot(), false)) { other.start(); assertEquals("remote response", other.prompt()); }
+    }
+    @Test(timeout=30000) public void remoteSdkPreservesCallerHeaderAndContinuesAfterClaimWithoutNewMessage() throws Exception {
+        configure();
+        try(com.mola.cmd.proxy.app.acp.task.service.TaskService tasks=new com.mola.cmd.proxy.app.acp.task.service.TaskService(temp.newFolder("remote-task-pool").toPath(),"task-owner");
+            com.mola.cmd.proxy.app.acp.task.mcp.TaskMcpServer mcp=new com.mola.cmd.proxy.app.acp.task.mcp.TaskMcpServer(new InetSocketAddress("127.0.0.1",0),tasks)) {
+            mcp.start();JSONObject create=new JSONObject();create.put("name","Remote task");create.put("contentMarkdown","Continue execution using the remote SDK");create.put("creatorName","Human");create.put("requestId","publish");String taskId=tasks.create(create).getJSONObject("task").getString("id");
+            JSONObject identity=JSON.parseObject("{instanceId:'task-owner',agentId:'remote-caller',groupId:'remote-group',robotNameSnapshot:'Remote Agent'}");
+            com.mola.cmd.proxy.app.acp.task.mcp.TaskCaller caller=new com.mola.cmd.proxy.app.acp.task.mcp.TaskCaller(){public JSONObject identity(){return identity;}public JSONObject claim(com.mola.cmd.proxy.app.acp.task.service.TaskService service,JSONObject request){return service.claim(request,identity,null);}};
+            JsonObject descriptor=mcp.registerCaller("http://127.0.0.1:"+mcp.getPort(),caller,hook->{});
+            try(Client client=new Client(robot(),false)) {
+                client.taskDescriptor=descriptor;client.start();String session=client.getSessionId();callTaskClaim.set(true);
+                assertEquals("remote response",client.prompt("Claim the next task and continue execution."));assertEquals(session,client.getSessionId());
+                JSONObject task=tasks.get(taskId,new JSONObject()).getJSONObject("task");assertEquals("remote-caller",task.getJSONObject("assignee").getString("agentId"));
+                assertTrue(lastModelRequest.get().toString().contains(taskId));
+                assertTrue(tasks.getRepository().claimOutbox("worker",20,System.currentTimeMillis(),30000).isEmpty());
+            }
+        }
     }
     @Test(timeout=35000) public void syncsWorkspaceSkillsAndMemoryIndexThenRestoresEmptyReplica() throws Exception {
         configure(); AcpRobotParam owner = robot();
@@ -395,11 +425,13 @@ public class RemoteAcpIntegrationTest {
     private static final class Client extends AbstractAcpClient {
         private final boolean mcp;
         private final String restore;
+        private JsonObject taskDescriptor;
         Client(AcpRobotParam robot, boolean mcp) { this(robot, mcp, null); }
         Client(AcpRobotParam robot, boolean mcp, String restore) { super(new RemoteStarcoreAgentProvider(), "/not/a/local/workspace", "remote-test", robot); this.mcp = mcp; this.restore = restore; }
         protected void createSession() throws IOException {
             JsonObject params = new JsonObject(); params.addProperty("cwd", workspacePath); JsonArray servers = new JsonArray();
             if (mcp) { JsonObject server = new JsonObject(); server.addProperty("name", "harness"); server.addProperty("type", "http"); server.addProperty("url", McpAuthManager.getInstance().getBaseUrl() + "/test-mcp"); servers.add(server); }
+            if(taskDescriptor!=null)servers.add(taskDescriptor.deepCopy());
             params.add("mcpServers", servers);
             if (restore != null) { params.addProperty("sessionId", restore); sendRequest("session/load", params); sessionId = restore; }
             else sessionId = sendRequest("session/new", params).getAsJsonObject("result").get("sessionId").getAsString();

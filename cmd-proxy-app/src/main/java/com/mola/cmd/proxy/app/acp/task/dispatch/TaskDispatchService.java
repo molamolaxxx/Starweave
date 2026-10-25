@@ -128,6 +128,7 @@ public final class TaskDispatchService implements AutoCloseable {
             repository.discard(eventId, token, "Terminal task is not assigned");
             return;
         }
+        if("OPEN".equals(task.getString("dispatchMode"))&&task.getJSONObject("assignee")==null){repository.discard(eventId,token,"Open task awaits claim or manual assignment");return;}
         JSONObject existing = task.getJSONObject("assignee");
         if (existing == null) {
             JSONObject target = task.getJSONObject("target");

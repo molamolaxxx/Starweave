@@ -201,11 +201,14 @@ public class ConversationHistoryManager {
         }
     }
 
+    private volatile JsonObject queryAccessOwner;
+    public void setQueryAccessOwner(JsonObject owner){queryAccessOwner=owner==null?null:owner.deepCopy();}
     private void writeQueryOwner() throws IOException {
         Files.createDirectories(sessionBaseDir);
         JsonObject owner = new JsonObject();
         owner.addProperty("agent", queryAgentName);
         owner.addProperty("scope", queryScope);
+        JsonObject access=queryAccessOwner;if(access!=null)for(Map.Entry<String,JsonElement> field:access.entrySet())owner.add(field.getKey(),field.getValue());
         Path temporary = Files.createTempFile(sessionBaseDir, "query-owner-", ".tmp");
         try {
             Files.write(temporary, PRETTY_GSON.toJson(owner).getBytes(StandardCharsets.UTF_8));

@@ -97,6 +97,7 @@ public class AcpClient extends AbstractAcpClient {
     private final AtomicReference<PromptOptions> activeMcpOptions = new AtomicReference<>();
     /** Set before executor admission so task cancellation cannot race the worker startup gap. */
     private final AtomicReference<PromptOptions> acceptedPromptOptions = new AtomicReference<>();
+    private final java.util.Queue<Runnable> closeHooks = new java.util.concurrent.ConcurrentLinkedQueue<>();
     /** Allows a task-control cancellation to recover provider cancel errors back to READY. */
     private final AtomicBoolean queuedWorkCancellationPending = new AtomicBoolean(false);
     private final AtomicInteger consecutiveInboxTurns = new AtomicInteger();
@@ -183,6 +184,24 @@ public class AcpClient extends AbstractAcpClient {
     /** Codex/Claude/Kiro 压缩完成后置为 true，下一次 prompt 完整重注入 ACP harness。 */
     private final AtomicBoolean acpHarnessReinjectionPending = new AtomicBoolean(false);
     private final ConversationQueryService conversationQueryService;
+    private volatile java.util.function.Supplier<com.google.gson.JsonObject> agentDirectory;
+    public void setAgentDirectory(java.util.function.Supplier<com.google.gson.JsonObject> directory, java.util.function.Predicate<String> historyAccess) {
+        this.agentDirectory=directory;
+        if(conversationQueryService!=null)conversationQueryService.setNamespaceAccess(historyAccess);
+    }
+    public void setPersistedHistoryAccess(java.util.function.Predicate<com.google.gson.JsonObject> access,com.google.gson.JsonObject owner) {
+        if(conversationQueryService!=null)conversationQueryService.setPersistedOwnerAccess(access);
+        historyManager.setQueryAccessOwner(owner);
+    }
+    public String historyReferenceForSession(String sessionId) { return conversationQueryService==null?null:conversationQueryService.sessionReference(sessionId); }
+    public String currentHistoryReference() { return conversationQueryService==null?null:conversationQueryService.currentSessionReference(); }
+    public String getActiveTaskId() { PromptOptions options=activeMcpOptions.get();return options==null?null:options.getTaskId(); }
+    public String getQueryNamespaceKey() { return historyManager.getQueryRoot().relativize(historyManager.getQueryNamespace()).toString().replace('\\','/'); }
+    private String listAgents(com.google.gson.JsonObject arguments) {
+        if(arguments.size()!=0)throw new IllegalArgumentException("list_agents does not accept arguments");
+        java.util.function.Supplier<com.google.gson.JsonObject> directory=agentDirectory;
+        if(directory==null)throw new IllegalStateException("Agent directory is unavailable");return directory.get().toString();
+    }
 
     /** 当前 provider 是否已报告上下文压缩开始。 */
     private boolean compactionInProgress;
@@ -225,6 +244,7 @@ public class AcpClient extends AbstractAcpClient {
                 ? new ConversationQueryService(historyManager.getQueryRoot(), historyManager.getQueryNamespace(),
                     historyManager.getQueryAgentName(), this::getSessionId,
                     () -> historyManager.queryCurrentHistory(getSessionId())) : null;
+        if(conversationQueryService!=null)conversationQueryService.setNamespaceAccess(key -> key.equals(getQueryNamespaceKey()));
         ActionToolService actionToolService = new ActionToolService(
                 this::executeMcpDispatchSubagent,
                 args -> executeMcpSchedule("schedule_task", args),
@@ -235,7 +255,7 @@ public class AcpClient extends AbstractAcpClient {
                 args -> executeMcpObservation("test_observation_script", args),
                 args -> executeMcpObservation("query_observation_events", args),
                 conversationQueryService == null ? null : conversationQueryService::search,
-                conversationQueryService == null ? null : conversationQueryService::readHistory);
+                conversationQueryService == null ? null : conversationQueryService::readHistory, this::listAgents);
         ActionRuntimeRegistry.getInstance().register(authSessionId,
                 actionToolService::execute, this::availableActionTools);
     }
@@ -821,6 +841,28 @@ public class AcpClient extends AbstractAcpClient {
                 && options.isTaskTurn() && taskId.equals(options.getTaskId());
     }
 
+    public void addCloseHook(Runnable hook) { closeHooks.add(hook); }
+
+    /** A claim continues through the current model/tool loop, with no second execution message. */
+    public com.alibaba.fastjson.JSONObject claimTaskInActiveTurn(
+            java.util.function.Function<String, com.alibaba.fastjson.JSONObject> operation) {
+        PromptOptions options=activeMcpOptions.get();
+        if(options==null||getState()!=State.BUSY)throw new com.mola.cmd.proxy.app.acp.task.model.TaskException("CALLER_NOT_ELIGIBLE","当前没有可继续执行的会话，请在活动会话中认领",409);
+        synchronized(options) {
+            if(activeMcpOptions.get()!=options||getState()!=State.BUSY)throw new com.mola.cmd.proxy.app.acp.task.model.TaskException("CALLER_NOT_ELIGIBLE","会话已结束，请重试确认认领结果",409);
+            com.alibaba.fastjson.JSONObject result=operation.apply(options.getTaskId());
+            if(result.getBooleanValue("continueExecution")) {
+                if(activeMcpOptions.get()==options&&getState()==State.BUSY) {
+                    com.alibaba.fastjson.JSONObject task=result.getJSONObject("task");
+                    options.setTaskContext(task.getString("id"),null,null,task.getLong("revision"),task.getLong("contentVersion"),false);
+                } else {
+                    result.put("continueExecution",false);result.put("continuationInterrupted",true);
+                }
+            }
+            return result;
+        }
+    }
+
     public PromptOptions getActiveTaskOptions() {
         PromptOptions options = acceptedPromptOptions.get();
         return options != null && options.isTaskTurn() ? options : null;
@@ -1085,6 +1127,8 @@ public class AcpClient extends AbstractAcpClient {
             return;
         }
 
+        Runnable hook;while((hook=closeHooks.poll())!=null)try{hook.run();}catch(RuntimeException failure){logger.warn("Closing MCP caller binding failed",failure);}
+
         try {
             if (deferMemoryExtraction) {
                 // forceFlush 会触发 onTurnFlushed；关机时必须先阻断增量提取提交。
@@ -1210,6 +1254,7 @@ public class AcpClient extends AbstractAcpClient {
 
     Set<String> availableActionTools() {
         LinkedHashSet<String> tools = new LinkedHashSet<>();
+        if(agentDirectory!=null&&(clientIdentity.getScope()==AcpClientIdentity.Scope.MAIN||clientIdentity.isTeam()))tools.add("list_agents");
         if (conversationQueryService != null) {
             tools.add("search_sessions");
             tools.add("read_session_history");

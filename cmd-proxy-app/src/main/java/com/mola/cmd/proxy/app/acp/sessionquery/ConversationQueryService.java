@@ -33,6 +33,18 @@ public final class ConversationQueryService implements AutoCloseable {
             }, new ThreadPoolExecutor.AbortPolicy());
     private static final int PAGE_SIZE = 30, PAGE_CHARS = 24000, OUTPUT_CHARS = 2000;
     private final Path root, namespace;
+    private volatile java.util.function.Predicate<JsonObject> persistedOwnerAccess=owner->false;
+    public void setPersistedOwnerAccess(java.util.function.Predicate<JsonObject> access){persistedOwnerAccess=Objects.requireNonNull(access);}
+    private volatile java.util.function.Predicate<String> namespaceAccess = key -> true;
+    public void setNamespaceAccess(java.util.function.Predicate<String> access) {
+        namespaceAccess=Objects.requireNonNull(access);
+        synchronized(snapshots){snapshots.clear();snapshotBytes=0;}
+    }
+    public String currentSessionReference() { return sessionReference(sessionId.get()); }
+    public String sessionReference(String sid) {
+        if(sid==null||sid.isEmpty()||sid.contains("/")||sid.contains("\\"))return null;
+        return hash(root.relativize(namespace.resolve(sid)).toString().replace('\\','/'));
+    }
     private final String agent;
     private final Supplier<String> sessionId;
     private final Supplier<JsonArray> currentHistory;
@@ -458,7 +470,9 @@ public final class ConversationQueryService implements AutoCloseable {
                     root.relativize(live.namespace).toString().replace('\\', '/'), 0));
             session.live = live;
         }
-        List<Session> result = new ArrayList<>(found.values());
+        List<Session> result = new ArrayList<>();
+        for(Session session:found.values())if(namespaceAccess.test(session.owner)||
+                ((session.owner.startsWith("team/")||session.owner.startsWith("starweave/"))&&session.accessOwner!=null&&persistedOwnerAccess.test(session.accessOwner)))result.add(session);
         result.sort(Comparator.comparingLong((Session s) -> s.updated).reversed().thenComparing(s -> s.ref));
         return result;
     }
@@ -482,12 +496,13 @@ public final class ConversationQueryService implements AutoCloseable {
                 if (!(parts.length == 1 || parts.length == 2 && "starweave".equals(parts[0])
                         || parts.length == 3 && "team".equals(parts[0]))) continue;
                 String name = parts[parts.length - 1];
+                JsonObject accessOwner=null;
                 Path metadata = ownerDir.resolve("query-owner.json");
                 if (Files.isRegularFile(metadata, LinkOption.NOFOLLOW_LINKS)) {
                     try {
                         JsonObject identity = JsonParser.parseString(new String(Files.readAllBytes(metadata), StandardCharsets.UTF_8)).getAsJsonObject();
                         if (!Arrays.asList("MAIN", "TEAM").contains(value(identity, "scope"))) continue;
-                        name = value(identity, "agent");
+                        name = value(identity, "agent");accessOwner=identity;
                     } catch (RuntimeException e) { LOG.warn("Invalid conversation ownership metadata"); continue; }
                 }
                 for (ConversationQueryService live : LIVE.keySet()) {
@@ -498,6 +513,7 @@ public final class ConversationQueryService implements AutoCloseable {
                 Session previous = found.get(ref);
                 if (previous == null) found.put(ref, new Session(directory, ref, name, owner, updated));
                 else previous.updated = Math.max(previous.updated, updated);
+                found.get(ref).accessOwner=accessOwner;
             }
         }
     }
@@ -742,6 +758,7 @@ public final class ConversationQueryService implements AutoCloseable {
         final String ref, agent, owner, scope, teamId, memberId;
         long updated;
         ConversationQueryService live;
+        JsonObject accessOwner;
         Session(Path directory, String ref, String agent, String owner, long updated) {
             this.directory = directory; this.ref = ref; this.agent = agent; this.owner = owner; this.updated = updated;
             String[] parts = owner.split("/");

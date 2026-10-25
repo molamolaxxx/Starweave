@@ -70,8 +70,8 @@ public class StarweaveTaskUiContractTest {
         assertTrue(comment.contains("attachmentIds:validTaskAttachmentIds('comment')"));
         assertTrue(comment.contains("observedContentVersion:task.contentVersion"));
         assertTrue(html.contains("expectedRevision:task.revision"));
-        assertTrue(html.contains("e.code==='VERSION_CONFLICT'"));
-        assertTrue(html.contains("e.code==='LATEST_CONTENT_REQUIRED'"));
+        assertTrue(create.contains("showTaskConflict("));
+        assertTrue(create.contains("e.message,e.current"));
         assertTrue(html.contains("body.reopen=true"));
     }
 
@@ -149,7 +149,7 @@ public class StarweaveTaskUiContractTest {
         assertTrue(html.contains(".task-dialog-view .task-dialog-side>.task-edit-only{display:flex;flex:1;min-height:0;flex-direction:column}"));
         assertTrue(html.contains(".task-dialog-view .task-comments{flex:1;min-height:0;max-height:none}"));
         assertTrue(html.contains("#taskDialog .task-comments{max-height:none;overflow:visible}"));
-        assertTrue(html.contains("className='dialog task-dialog task-dialog-'+mode"));
+        assertTrue(html.contains("className='dialog task-dialog task-dialog-'+(mode==='assign'?'create':mode)"));
     }
 
     @Test
@@ -158,8 +158,8 @@ public class StarweaveTaskUiContractTest {
 
         assertTrue(html.contains(".task-dialog{width:min(1320px,calc(100vw - 48px))"));
         assertTrue(html.contains(".task-dialog-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(330px,.85fr)"));
-        assertTrue(html.contains(".task-dialog{width:calc(100vw - 24px);height:calc(100dvh - 24px)}"));
-        assertTrue(html.contains(".robot-dialog,.dialog.team-session-dialog,.task-dialog{width:100vw;height:100dvh;border-radius:0}"));
+        assertTrue(html.contains(".task-dialog{width:calc(100vw - 24px);height:calc(100vh - 24px);height:calc(100dvh - 24px)}"));
+        assertTrue(html.contains(".robot-dialog,.dialog.team-session-dialog,.task-dialog{width:100vw;height:100vh;height:100dvh;border-radius:0}"));
         assertTrue(html.contains("overscroll-behavior:contain"));
     }
 

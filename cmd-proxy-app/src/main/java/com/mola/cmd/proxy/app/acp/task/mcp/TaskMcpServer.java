@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Stateless Streamable HTTP and legacy HTTP+SSE transports for Starweave tasks.
  *
- * <p>It intentionally exposes exactly three business tools. Transport session IDs only bind a
+ * <p>It intentionally exposes six business tools. Transport session IDs only bind a
  * POST response to an SSE stream and are not authentication credentials.</p>
  */
 public final class TaskMcpServer implements AutoCloseable {
@@ -51,6 +51,7 @@ public final class TaskMcpServer implements AutoCloseable {
     private static final String CLOSE = "__TASK_MCP_CLOSE__";
 
     private final TaskMcpOperations operations;
+    private final ConcurrentHashMap<String, TaskCaller> callers = new ConcurrentHashMap<>();
     private final HttpServer server;
     private final ExecutorService executor;
     private final ConcurrentHashMap<String, SseSession> sessions = new ConcurrentHashMap<>();
@@ -106,12 +107,29 @@ public final class TaskMcpServer implements AutoCloseable {
         return descriptor;
     }
 
+    /** Per-client opaque credential; runtime routes must preserve this Header for remote Agents. */
+    public JsonObject registerCaller(String advertisedBaseUrl, TaskCaller caller, java.util.function.Consumer<Runnable> onClose) {
+        if(closed.get()||callers.size()>=4096)throw new IllegalStateException("Task MCP caller limit reached");
+        String token=UUID.randomUUID().toString()+UUID.randomUUID();callers.put(token,caller);
+        onClose.accept(() -> callers.remove(token,caller));
+        JsonObject descriptor=acpServerDescriptor(advertisedBaseUrl),header=new JsonObject();
+        header.addProperty("name","Authorization");header.addProperty("value","Bearer "+token);descriptor.getAsJsonArray("headers").add(header);return descriptor;
+    }
+    private TaskCaller caller(HttpExchange exchange) {
+        String header=exchange.getRequestHeaders().getFirst("Authorization");
+        return header==null?null:callers.get(header.replaceFirst("^Bearer ",""));
+    }
+    private boolean authenticate(HttpExchange exchange) throws IOException {
+        if(exchange.getRequestHeaders().getFirst("Authorization")!=null&&caller(exchange)==null){sendPlain(exchange,401,"Task caller credential expired or invalid");return false;}
+        return true;
+    }
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
         server.stop(0);
         for (SseSession session : sessions.values()) session.offer(CLOSE);
         sessions.clear();
+        callers.clear();
         executor.shutdownNow();
         try {
             executor.awaitTermination(2, TimeUnit.SECONDS);
@@ -124,6 +142,7 @@ public final class TaskMcpServer implements AutoCloseable {
     private final class HttpRpcHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            if(!authenticate(exchange))return;
             if (!validOrigin(exchange)) {
                 sendPlain(exchange, 403, "Origin is not allowed");
                 return;
@@ -164,12 +183,12 @@ public final class TaskMcpServer implements AutoCloseable {
             if (body instanceof JSONArray) {
                 JSONArray responses = new JSONArray();
                 for (Object item : (JSONArray) body) {
-                    JSONObject response = httpRpc((JSONObject) item);
+                    JSONObject response = httpRpc((JSONObject) item, caller(exchange));
                     if (response != null) responses.add(response);
                 }
                 result = responses.isEmpty() ? null : responses;
             } else {
-                result = httpRpc((JSONObject) body);
+                result = httpRpc((JSONObject) body, caller(exchange));
             }
             if (result == null) {
                 exchange.sendResponseHeaders(202, -1);
@@ -185,10 +204,10 @@ public final class TaskMcpServer implements AutoCloseable {
         }
     }
 
-    private JSONObject httpRpc(JSONObject request) {
+    private JSONObject httpRpc(JSONObject request, TaskCaller caller) {
         if (!"2.0".equals(request.getString("jsonrpc"))) return error(request.get("id"), -32600, "invalid JSON-RPC version");
         if (!request.containsKey("method") && (request.containsKey("result") || request.containsKey("error"))) return null;
-        JSONObject response = handleRpc(request);
+        JSONObject response = handleRpc(request, caller);
         if ("initialize".equals(request.getString("method")) && response != null
                 && response.getJSONObject("result") != null) {
             response.getJSONObject("result").put("protocolVersion", HTTP_PROTOCOL_VERSION);
@@ -210,6 +229,7 @@ public final class TaskMcpServer implements AutoCloseable {
     private final class SseHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            if(!authenticate(exchange))return;
             // Keep previously injected URLs usable by clients that POST initialization.
             if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                 new HttpRpcHandler().handle(exchange);
@@ -229,7 +249,7 @@ public final class TaskMcpServer implements AutoCloseable {
                 return;
             }
             String sessionId = UUID.randomUUID().toString();
-            SseSession session = new SseSession();
+            SseSession session = new SseSession(caller(exchange));
             sessions.put(sessionId, session);
             Headers headers = exchange.getResponseHeaders();
             headers.set("Content-Type", "text/event-stream; charset=utf-8");
@@ -264,6 +284,7 @@ public final class TaskMcpServer implements AutoCloseable {
     private final class MessagesHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            if(!authenticate(exchange))return;
             if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                 sendPlain(exchange, 405, "POST required");
                 return;
@@ -275,6 +296,7 @@ public final class TaskMcpServer implements AutoCloseable {
                 sendPlain(exchange, 404, "unknown or closed MCP session");
                 return;
             }
+            if(session.caller!=caller(exchange)){sendPlain(exchange,403,"MCP session belongs to another caller");return;}
             JSONObject request;
             try {
                 request = JSON.parseObject(readBody(exchange.getRequestBody()));
@@ -283,7 +305,7 @@ public final class TaskMcpServer implements AutoCloseable {
                 sendPlain(exchange, 400, "invalid JSON-RPC request");
                 return;
             }
-            JSONObject response = handleRpc(request);
+            JSONObject response = handleRpc(request, session.caller);
             if (response != null && !session.offer(response.toJSONString())) {
                 sendPlain(exchange, 503, "MCP session response queue is full");
                 return;
@@ -293,7 +315,7 @@ public final class TaskMcpServer implements AutoCloseable {
         }
     }
 
-    private JSONObject handleRpc(JSONObject request) {
+    private JSONObject handleRpc(JSONObject request, TaskCaller caller) {
         Object id = request.get("id");
         String method = request.getString("method");
         if (method == null || method.trim().isEmpty()) return error(id, -32600, "invalid request");
@@ -308,7 +330,7 @@ public final class TaskMcpServer implements AutoCloseable {
             if ("tools/call".equals(method)) {
                 JSONObject params = request.getJSONObject("params");
                 if (params == null) throw new IllegalArgumentException("params is required");
-                return success(id, callTool(params));
+                return success(id, callTool(params, caller));
             }
             return error(id, -32601, "method not found: " + method);
         } catch (IllegalArgumentException invalid) {
@@ -318,12 +340,21 @@ public final class TaskMcpServer implements AutoCloseable {
         }
     }
 
-    private JSONObject callTool(JSONObject params) {
+    private JSONObject callTool(JSONObject params, TaskCaller caller) {
         String name = required(params.getString("name"), "name");
         JSONObject args = params.getJSONObject("arguments");
         if (args == null) args = new JSONObject(true);
         JSONObject data;
         switch (name) {
+            case "list_tasks": {
+                data=operations.listTasks(args,caller);break;
+            }
+            case "publish_task": {
+                data=operations.publishTask(args,caller);break;
+            }
+            case "claim_task": {
+                data=operations.claimTask(args,caller);break;
+            }
             case "get_task": {
                 String taskId = required(args.getString("taskId"), "taskId");
                 if (args.containsKey("revision") && args.containsKey("contentVersion")) {
@@ -372,17 +403,17 @@ public final class TaskMcpServer implements AutoCloseable {
 
     private static JSONObject toolsResult() {
         JSONArray tools = new JSONArray();
-        tools.add(tool("get_task", "Read the authoritative task snapshot, current versions, status, allowed transitions, comments and history. Call this before starting, resuming or completing work.",
+        tools.add(tool("get_task", "获取待办任务的最新详情、状态、版本、评论和历史。 Read the authoritative task snapshot, current versions, status, allowed transitions, comments and history. Call this before starting, resuming or completing work.",
                 schema(properties(
-                        property("taskId", "string", "Task UUID"),
+                        property("taskId", "string", "待办任务 UUID"),
                         property("revision", "integer", "Optional snapshot revision"),
                         property("contentVersion", "integer", "Optional requirement version"),
                         property("commentsCursor", "string", "Optional comments cursor"),
                         property("historyCursor", "string", "Optional history cursor"),
                         property("limit", "integer", "Page size, at most 100")), "taskId")));
-        tools.add(tool("update_task_status", "Persist a task status transition using the latest optimistic versions. Normally set IN_PROGRESS when work starts and COMPLETED only after finishing and re-reading the latest task. A chat reply or comment does not change status; Agents cannot reopen terminal tasks.",
+        tools.add(tool("update_task_status", "更新待办任务的执行状态。 Persist a task status transition using the latest optimistic versions. Normally set IN_PROGRESS when work starts and COMPLETED only after finishing and re-reading the latest task. A chat reply or comment does not change status; Agents cannot reopen terminal tasks.",
                 schema(properties(
-                        property("taskId", "string", "Task UUID"),
+                        property("taskId", "string", "待办任务 UUID"),
                         enumProperty("status", "Target status. Legal values are START, IN_PROGRESS, COMPLETED, CANCELLED and SUSPENDED; use get_task.allowedTransitions for the current task.", "START", "IN_PROGRESS", "COMPLETED", "CANCELLED", "SUSPENDED"),
                         property("expectedRevision", "integer", "Expected current revision"),
                         property("observedContentVersion", "integer", "Content version processed"),
@@ -391,15 +422,31 @@ public final class TaskMcpServer implements AutoCloseable {
                         property("reason", "string", "Optional status-change reason")),
                         "taskId", "status", "expectedRevision", "observedContentVersion",
                         "requestId", "actorName")));
-        tools.add(tool("add_task_comment", "Append Agent progress, blockers or results to a task. A comment does not start, suspend, cancel or complete the task; use update_task_status for transitions. Markdown or at least one uploaded attachment is required.",
+        tools.add(tool("add_task_comment", "为待办任务记录进度、阻塞或执行结果。 Append Agent progress, blockers or results to a task. A comment does not start, suspend, cancel or complete the task; use update_task_status for transitions. Markdown or at least one uploaded attachment is required.",
                 schema(properties(
-                        property("taskId", "string", "Task UUID"),
+                        property("taskId", "string", "待办任务 UUID"),
                         property("contentMarkdown", "string", "Markdown comment"),
                         arrayProperty("attachmentIds", "Previously uploaded attachment IDs"),
                         property("observedContentVersion", "integer", "Observed content version"),
                         property("authorName", "string", "Agent display name"),
                         property("requestId", "string", "Persistent idempotency key")),
                         "taskId", "observedContentVersion", "authorName", "requestId")));
+        tools.add(tool("list_tasks", "列出当前环境所有人的待办任务，默认排除 COMPLETED 和 CANCELLED。可查询待认领待办任务或本人待办任务；用 get_task 查看明细，未认领成功不得执行。", schema(properties(
+            property("q","string","待办任务名称或 ID"), arrayProperty("statuses","指定状态集合；不能与 status/includeTerminal 同传"),
+            enumProperty("status","单个状态","START","IN_PROGRESS","SUSPENDED","COMPLETED","CANCELLED"),
+            property("includeTerminal","boolean","未指定状态时是否包含终态，默认 false"),
+            enumProperty("assignmentState","分配情况","UNCLAIMED","PENDING_ASSIGNMENT","ASSIGNED"),
+            property("onlyMine","boolean","仅查询当前调用 Agent 的待办任务，默认 false"),property("claimableOnly","boolean","仅查可认领待办任务，默认 false"),
+            property("assigneeInstanceId","string","执行者所属实例"),property("assigneeAgentId","string","执行 Agent ID"),
+            property("assigneeTeamId","string","团队 ID"),property("assigneeTeamMemberId","string","团队成员 ID"),property("assigneeName","string","执行者名称"),
+            property("createdFrom","string","起始 UTC ISO 时间"),property("createdTo","string","截止 UTC ISO 时间"),
+            property("page","integer","页码，默认 1"),property("pageSize","integer","单页条数，默认 20，最多 100")))));
+        tools.add(tool("publish_task", "发布待办任务。默认进入无人认领待办任务池、不投递消息；可先调用 acp-harness.list_agents，将可分配目标的 agent_ref 原样传入 assignee_ref，指定普通 Agent 或团队成员，系统随后投递执行消息。发布者和当前来源待办任务由服务端自动记录，不能伪造；可通过 get_task 查看来源和派生待办任务。", schema(properties(
+            property("assignee_ref","string","可选：list_agents 返回且 task_assignable=true 的 agent_ref；不要填写名称或自行构造 ID"),property("name","string","待办任务名称"),property("contentMarkdown","string","待办任务要求 Markdown"),arrayProperty("attachmentIds","已上传附件 ID"),
+            property("requestId","string","持久幂等键，超时后用原键和原参数重试")),"name","requestId")));
+        tools.add(tool("claim_task", "为当前调用 Agent 认领待办任务，成功后继续执行，可组织团队协作，无需等待额外通知，不重复投递执行消息。指定 taskId 时须先 get_task 并携带最新版本；省略 taskId 则原子领取最早可认领待办任务。失败不要执行；超时用原 requestId 和参数确认结果，不得换键另领。", schema(properties(
+            property("taskId","string","可选；省略时自动领取下一条"),property("expectedRevision","integer","指定待办任务时必填：最新修订号"),
+            property("observedContentVersion","integer","指定待办任务时必填：最新正文版本"),property("requestId","string","持久幂等键，重试必须复用")),"requestId")));
         JSONObject result = new JSONObject(true);
         result.put("tools", tools);
         return result;
@@ -480,6 +527,14 @@ public final class TaskMcpServer implements AutoCloseable {
             failureData.put("code", "TASK_OPERATION_FAILED");
         }
         failureData.put("message", safeMessage(failure));
+        failureData.put("claimed",false);
+        String code=failureData.getString("code");
+        String next="操作未成功，请勿开始执行待办任务。";
+        if("TASK_ALREADY_ASSIGNED".equals(code))next="待办任务已被其他执行者接走，请勿执行，可查询其他待认领待办任务。";
+        else if("NO_CLAIMABLE_TASKS".equals(code))next="当前没有可认领待办任务，正常结束本次领取，无需立即循环重试。";
+        else if("VERSION_CONFLICT".equals(code)||"LATEST_CONTENT_REQUIRED".equals(code))next="请先 get_task 读取最新要求与状态，再决定是否认领，不要基于旧版本执行。";
+        else if("STORAGE_UNAVAILABLE".equals(code))next="结果暂未确认，请使用原 requestId 和原参数重试确认，确认成功前不要执行或另领待办任务。";
+        failureData.put("instruction",next);
         JSONArray content = new JSONArray();
         JSONObject text = new JSONObject(true);
         text.put("type", "text");
@@ -487,7 +542,7 @@ public final class TaskMcpServer implements AutoCloseable {
         content.add(text);
         result.put("content", content);
         result.put("structuredContent", failureData);
-        result.put("isError", true);
+        result.put("isError", !"NO_CLAIMABLE_TASKS".equals(failureData.getString("code")));
         return result;
     }
 
@@ -589,6 +644,8 @@ public final class TaskMcpServer implements AutoCloseable {
     }
 
     private static final class SseSession {
+        final TaskCaller caller;
+        SseSession(TaskCaller caller){this.caller=caller;}
         private final ArrayBlockingQueue<String> queue =
                 new ArrayBlockingQueue<>(SESSION_QUEUE_CAPACITY);
 

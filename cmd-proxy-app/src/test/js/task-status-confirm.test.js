@@ -36,8 +36,11 @@ function fixture(confirm) {
         encodeURIComponent,
         JSON
     })
-    vm.runInContext(section('function taskStatusLabel(status)',
-        'async function submitTaskComment()'), context)
+    const assets = path.resolve(__dirname, '../../main/resources/configui/assets/js')
+    const agents = fs.readFileSync(path.join(assets, 'agents.js'), 'utf8')
+    const tasks = fs.readFileSync(path.join(assets, 'tasks.js'), 'utf8')
+    vm.runInContext(agents.slice(agents.indexOf('function taskStatusLabel('), agents.indexOf('\n', agents.indexOf('function taskStatusLabel('))) + '\n' +
+        tasks.slice(tasks.indexOf('async function updateTaskStatus('), tasks.indexOf('async function submitTaskComment(')), context)
     context.taskApi = async (url, options) => {
         requests.push({url, options})
         return {task: {id: 'task-1', status: 'IN_PROGRESS'}}
@@ -54,7 +57,7 @@ test('cancelling status confirmation does not send the update', async () => {
     assert.equal(confirmations.length, 1)
     assert.match(confirmations[0].message, /接口联调/)
     assert.match(confirmations[0].message, /“未开始”修改为“进行中”/)
-    assert.equal(confirmations[0].options.title, '确认修改任务状态？')
+    assert.equal(confirmations[0].options.title, '确认修改待办任务状态？')
     assert.equal(confirmations[0].options.confirmText, '修改为进行中')
 })
 

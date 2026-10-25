@@ -58,6 +58,27 @@ public class AcpClientSessionQueryTest {
         catch (IllegalStateException expected) { assertEquals("AUTH_SESSION_NOT_FOUND", expected.getMessage()); }
     }
 
+    @Test public void authenticatedDirectoryAndHistoryUseSameBoundaryAndRejectArguments() throws Exception {
+        Path root=temporary.newFolder("directory-session").toPath();
+        AcpClientIdentity starId=AcpClientIdentity.starweave("star","star","starweave/star","starweave-instance","Star");
+        AcpClientIdentity molaId=AcpClientIdentity.main("mola","Mola","Mola");
+        AcpClient star=new AcpClient(new TestProvider(),".",starId,new AcpRobotParam(),new ConversationHistoryManager(starId,root));
+        AcpClient mola=new AcpClient(new TestProvider(),".",molaId,new AcpRobotParam(),new ConversationHistoryManager(molaId,root));
+        com.alibaba.fastjson.JSONArray rows=com.alibaba.fastjson.JSON.parseArray("[{instance_id:'i',visibility_surface:'STARWEAVE',owner_id:'starweave-instance',logical_id:'star',scope:'main',history_namespace:'starweave/star'},{instance_id:'i',visibility_surface:'MOLACHAT',owner_id:'alice',logical_id:'mola',scope:'main',history_namespace:'Mola'}]");
+        com.mola.cmd.proxy.app.acp.action.AgentDirectoryService directory=new com.mola.cmd.proxy.app.acp.action.AgentDirectoryService(()->rows);
+        star.setAgentDirectory(()->JsonParser.parseString(directory.list("star").toJSONString()).getAsJsonObject(),key->directory.allowsNamespace("star",key));
+        mola.setAgentDirectory(()->JsonParser.parseString(directory.list("mola").toJSONString()).getAsJsonObject(),key->directory.allowsNamespace("mola",key));
+        HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);server.createContext("/mcp",new CmdProxyMcpHttpHandler());server.start();
+        try{
+            star.setSessionId("s");mola.setSessionId("m");String url="http://127.0.0.1:"+server.getAddress().getPort()+"/mcp";
+            assertTrue(star.availableActionTools().contains("list_agents"));assertTrue(mola.availableActionTools().contains("list_agents"));
+            JsonObject listed=call(url,mola.getAuthSessionId(),"list_agents",new JsonObject());assertEquals(1,listed.getAsJsonArray("agents").size());assertTrue(listed.getAsJsonArray("agents").get(0).getAsJsonObject().get("is_self").getAsBoolean());assertFalse(listed.toString().contains("starweave"));
+            JsonObject historyArgs=JsonParser.parseString("{session_refs:['"+star.currentHistoryReference()+"']}").getAsJsonObject();
+            assertEquals("SESSION_NOT_FOUND",call(url,mola.getAuthSessionId(),"read_session_history",historyArgs).getAsJsonArray("sessions").get(0).getAsJsonObject().getAsJsonObject("error").get("code").getAsString());
+            try{ActionRuntimeRegistry.getInstance().execute(mola.getAuthSessionId(),"list_agents",args("owner_id","starweave-instance"));fail();}catch(IllegalArgumentException expected){}
+        }finally{star.close();mola.close();server.stop(0);}
+    }
+
     private static JsonObject call(String url, String auth, String tool, JsonObject args) throws Exception {
         JsonObject request = new JsonObject(); request.addProperty("jsonrpc", "2.0");
         request.addProperty("id", 1); request.addProperty("method", "tools/call");

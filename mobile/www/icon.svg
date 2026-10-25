@@ -1,5 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#151e38"/>
-  <path d="M104 150 180 362 256 254 332 362 408 150" fill="none" stroke="#a4b4ff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-  <g fill="#edf1ff"><circle cx="104" cy="150" r="23"/><circle cx="180" cy="362" r="20"/><circle cx="256" cy="254" r="26"/><circle cx="332" cy="362" r="20"/><circle cx="408" cy="150" r="23"/></g>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 40 40">
+  <!-- Matches ConfigUI .brand-mark: 40px tile, 13px corners, 27px SVG. -->
+  <defs>
+    <linearGradient id="brand" gradientUnits="userSpaceOnUse" x1="4.023275" y1="-2.817128" x2="35.976725" y2="42.817128">
+      <stop stop-color="#625bd8"/><stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect width="40" height="40" rx="13" fill="url(#brand)"/>
+  <svg x="6.5" y="6.5" width="27" height="27" viewBox="0 0 28 26" fill="none">
+    <path d="M3 4.5 8.5 21 14 12.5 19.5 21 25 4.5" stroke="white" stroke-opacity=".72" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="3" cy="4.5" r="2" fill="white"/>
+    <circle cx="8.5" cy="21" r="1.7" fill="white"/>
+    <circle cx="14" cy="12.5" r="2.2" fill="white"/>
+    <circle cx="19.5" cy="21" r="1.7" fill="white"/>
+    <circle cx="25" cy="4.5" r="2" fill="white"/>
+  </svg>
 </svg>

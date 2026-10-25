@@ -299,7 +299,7 @@ public class ConfigUiLayoutContractTest {
         assertFalse(html.contains("<span>version '+team.version+'</span>"));
         assertTrue(html.contains("id=\"teamSessionDialog\""));
         assertTrue(html.contains(".dialog.team-session-dialog{width:min(1440px,calc(100vw - 56px))"));
-        assertTrue(html.contains("grid-template-columns:300px minmax(0,1fr)"));
+        assertTrue(html.contains("grid-template-columns:clamp(180px,var(--session-sidebar-width,240px),min(420px,40%)) minmax(0,1fr)"));
         assertTrue(html.contains("function openTeamSessionDialog("));
         assertTrue(html.contains("function toggleTeamSessionSidebar("));
         assertTrue(html.contains("function loadTeamSessionSnapshot("));

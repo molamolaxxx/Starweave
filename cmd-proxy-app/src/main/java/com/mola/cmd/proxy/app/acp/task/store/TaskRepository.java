@@ -74,21 +74,22 @@ public final class TaskRepository implements AutoCloseable {
     }
     /** Candidate discovery happens outside the transaction; occupancy and selection commit together. */
     public JSONObject assign(String taskId,List<JSONObject> candidates,String mode) {
-        if(candidates==null || candidates.isEmpty() || candidates.size()>1000 || ("FIXED".equals(mode) && candidates.size()!=1) || !Arrays.asList("FIXED","RANDOM","AFFINITY").contains(mode))
+        return transaction(c->{JSONObject t=task(c,taskId);if(t.getJSONObject("assignee")!=null)return t;
+            return assignInTransaction(c,t,selectAssignee(c,taskId,candidates,mode));});
+    }
+    public static JSONObject selectAssignee(Connection c,String taskId,List<JSONObject> candidates,String mode) throws SQLException {
+        if(candidates==null||candidates.isEmpty()||candidates.size()>1000||("FIXED".equals(mode)&&candidates.size()!=1)||!Arrays.asList("FIXED","RANDOM","AFFINITY").contains(mode))
             throw new TaskException("INVALID_ARGUMENT","Invalid assignment candidates or mode",400);
         List<JSONObject> stable=new ArrayList<>();Set<String> identities=new HashSet<>();
-        for(JSONObject candidate:candidates){if(candidate==null || candidate.isEmpty() || !identities.add(assignmentKey(candidate)))throw new TaskException("INVALID_ARGUMENT","Invalid or duplicate candidate",400);stable.add(JSON.parseObject(candidate.toJSONString()));}
-        stable.sort(Comparator.comparing(TaskRepository::assignmentKey));
-        return transaction(c->{JSONObject t=task(c,taskId);if(t.getJSONObject("assignee")!=null)return t;
-            JSONObject chosen=stable.get(0);
-            if("RANDOM".equals(mode))chosen=stable.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(stable.size()));
-            if("AFFINITY".equals(mode)){
-                Set<String> occupied=new HashSet<>();for(JSONObject active:snapshots(c,"SELECT snapshot FROM task WHERE status NOT IN ('COMPLETED','CANCELLED')")){JSONObject a=active.getJSONObject("assignee");if(a!=null)occupied.add(assignmentKey(a));}
-                chosen=null;for(JSONObject candidate:stable)if(!occupied.contains(assignmentKey(candidate))){chosen=candidate;break;}
-                if(chosen==null)chosen=stable.get(Math.floorMod(taskId.hashCode(),stable.size()));
-            }
-            return assignInTransaction(c,t,chosen);
-        });
+        for(JSONObject candidate:candidates){if(candidate==null||candidate.isEmpty()||!identities.add(assignmentKey(candidate)))throw new TaskException("INVALID_ARGUMENT","Invalid or duplicate candidate",400);stable.add(JSON.parseObject(candidate.toJSONString()));}
+        stable.sort(Comparator.comparing(TaskRepository::assignmentKey));JSONObject chosen=stable.get(0);
+        if("RANDOM".equals(mode))chosen=stable.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(stable.size()));
+        if("AFFINITY".equals(mode)){
+            Set<String> occupied=new HashSet<>();for(JSONObject active:snapshots(c,"SELECT snapshot FROM task WHERE status NOT IN ('COMPLETED','CANCELLED')")){JSONObject a=active.getJSONObject("assignee");if(a!=null)occupied.add(assignmentKey(a));}
+            chosen=null;for(JSONObject candidate:stable)if(!occupied.contains(assignmentKey(candidate))){chosen=candidate;break;}
+            if(chosen==null)chosen=stable.get(Math.floorMod(taskId.hashCode(),stable.size()));
+        }
+        return chosen;
     }
     private static String assignmentKey(JSONObject a){StringBuilder key=new StringBuilder();for(String field:Arrays.asList("instanceId","ownerId","agentId","groupId","teamId","teamMemberId")){String value=a.getString(field);key.append(value==null?"":value).append('\n');}return key.toString();}
     private static JSONObject assignInTransaction(Connection c,JSONObject t,JSONObject assignee)throws SQLException {

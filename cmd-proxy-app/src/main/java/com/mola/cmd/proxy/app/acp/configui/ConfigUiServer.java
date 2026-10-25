@@ -389,11 +389,15 @@ public class ConfigUiServer {
             thread.setDaemon(true);
             return thread;
         });
-        updateCheckExecutor.scheduleWithFixedDelay(
-                () -> requestJarUpdate(true),
-                UPDATE_CHECK_INTERVAL_MINUTES,
-                UPDATE_CHECK_INTERVAL_MINUTES,
-                TimeUnit.MINUTES);
+        if (!Boolean.getBoolean("cmd.proxy.disableAutomaticUpdate")) {
+            updateCheckExecutor.scheduleWithFixedDelay(
+                    () -> requestJarUpdate(true),
+                    UPDATE_CHECK_INTERVAL_MINUTES,
+                    UPDATE_CHECK_INTERVAL_MINUTES,
+                    TimeUnit.MINUTES);
+        } else {
+            logger.info("JAR 自动更新检查已关闭");
+        }
         logger.info("ConfigUI 已启动: http://localhost:{}", port);
     }
 

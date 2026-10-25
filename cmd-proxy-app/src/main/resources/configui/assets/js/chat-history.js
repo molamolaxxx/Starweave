@@ -68,6 +68,8 @@ if(!content){box.innerHTML='';content=document.createElement('div');content.clas
 if(state.observer&&state.content!==content){state.observer.disconnect();state.observer=null}
 state.content=content;
 patchChatRows(content,html,keys,state);
+// Do not rely on :has(): older WebViews otherwise collapse the empty prompt height.
+content.classList.toggle('chat-empty-state',Array.prototype.some.call(content.children,function(child){return child.classList.contains('session-empty')}));
 chatRestoreViewport(box,state);
 if(!state.observer&&typeof ResizeObserver!=='undefined'){
 state.observer=new ResizeObserver(function(){if(chatViewportStates.get(box)===state)chatRestoreViewport(box,state)});

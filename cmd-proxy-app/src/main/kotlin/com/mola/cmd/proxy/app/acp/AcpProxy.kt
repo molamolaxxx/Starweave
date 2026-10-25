@@ -1635,9 +1635,76 @@ object AcpProxy {
      * 统一能力挂点：Team 的 memory/ability 复用来源 owner，schedule 保持正常能力；
      * Team talkTo 使用严格队内 memberId 路由，绝不进入普通 robot registry。
      */
+    private val agentDirectory = com.mola.cmd.proxy.app.acp.action.AgentDirectoryService { agentDirectoryEntries() }
+
+    /** Fresh local snapshots only: listing never opens sessions or performs remote RPC. */
+    private fun agentDirectoryEntries(): com.alibaba.fastjson.JSONArray {
+        val result = com.alibaba.fastjson.JSONArray()
+        val instanceId = CmdProxyHome.instanceId()
+        val clients = registry.snapshotClients()
+        fun addMain(robot: AcpRobotParam, owner: String, starweave: Boolean) {
+            if (robot.isOnlySubAgent || robot.isOnlyTeamMember) return
+            val logicalId = if (starweave) StarweaveIdentity.groupId(instanceId, robot.name) else mainGroupId(owner, robot.name)
+            val client = clients[logicalId]
+            val row = JSONObject(true)
+            row["instance_id"] = instanceId; row["visibility_surface"] = if (starweave) "STARWEAVE" else "MOLACHAT"
+            row["owner_id"] = owner; row["logical_id"] = logicalId; row["scope"] = "main"
+            row["agent_id"] = StarweaveIdentity.acpId(robot.name); row["agent"] = robot.name; row["display_name"] = robot.name
+            row["history_namespace"] = client?.queryNamespaceKey ?: if (starweave) StarweaveIdentity.historyNamespace(robot.name) else com.mola.cmd.proxy.app.acp.common.PathUtils.sanitizePath(robot.name)
+            row["enabled"] = robot.isEnabled
+            val remote = robot.agentProvider == com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.PROVIDER
+            val connected = !remote || com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.online(robot.name)
+            row["execution_location"] = if (remote) "REMOTE" else "LOCAL"
+            row["connection_state"] = if (connected) "CONNECTED" else "DISCONNECTED"
+            row["state"] = if (!connected) "UNKNOWN" else client?.state?.name ?: "NOT_STARTED"
+            row["task_assignable"] = starweave && robot.isEnabled && connected && client?.state != AbstractAcpClient.State.CLOSING && client?.state != AbstractAcpClient.State.CLOSED
+            row["task_target"] = JSONObject(true).apply { put("type", "AGENT"); put("instanceId", instanceId); put("ownerId", owner); put("groupId", logicalId); put("agentId", StarweaveIdentity.acpId(robot.name)) }
+            row["current_session"] = client?.sessionId?.takeIf { it.isNotBlank() }?.let { sid -> JSONObject(true).apply {
+                put("session_id",sid); put("session_ref",client.historyReferenceForSession(sid)); put("history_available",client.historyReferenceForSession(sid)!=null)
+            } }
+            result.add(row)
+        }
+        for (robot in configuredRobotRegistry.values.sortedBy { it.name }) {
+            addMain(robot, StarweaveIdentity.ownerId(instanceId), true)
+            for (owner in activeChatterIds.sorted()) addMain(robot, owner, false)
+        }
+        val manager = teamManager
+        manager?.snapshotDefinitions()?.filter { !it.state.isTerminal }?.sortedBy { it.teamId }?.forEach { team ->
+            team.members.sortedBy { it.teamMemberId }.forEach { member ->
+                val client = manager.clientRegistry.get(team.teamId, member.teamMemberId).orElse(null)
+                val row = JSONObject(true)
+                row["instance_id"] = instanceId; row["visibility_surface"] = if (StarweaveIdentity.isReservedOwner(team.ownerChatterId)) "STARWEAVE" else "MOLACHAT"
+                row["owner_id"] = team.ownerChatterId; row["logical_id"] = client?.clientIdentity?.logicalId ?: member.acpClientId
+                row["scope"] = "team"; row["agent_id"] = member.sourceRobotId; row["agent"] = member.sourceRobotName
+                row["display_name"] = member.displayName; row["team_id"] = team.teamId; row["team_name"] = team.name
+                row["member_id"] = member.teamMemberId; row["is_captain"] = team.isCaptain(member.teamMemberId); row["team_state"] = team.state.name
+                row["history_namespace"] = client?.queryNamespaceKey ?: "team/${team.teamId}/${member.teamMemberId}"
+                val robot = configuredRobotRegistry[member.sourceRobotName]
+                val remote = robot?.agentProvider == com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.PROVIDER
+                val connected = !remote || (robot != null && com.mola.cmd.proxy.app.acp.remote.RemoteAcpManager.online(robot.name))
+                row["execution_location"] = if (remote) "REMOTE" else "LOCAL"; row["connection_state"] = if (connected) "CONNECTED" else "DISCONNECTED"
+                row["state"] = if (!connected) "UNKNOWN" else client?.state?.name ?: member.state.name; row["enabled"] = robot?.isEnabled ?: false
+                row["task_assignable"] = StarweaveIdentity.isReservedOwner(team.ownerChatterId) && !team.isMixedPlacement && team.state.name == "READY" && (!team.isCaptainMode || team.isCaptain(member.teamMemberId)) && !member.state.isTerminal && member.state.name != "CLOSING" && robot?.isEnabled == true && connected
+                row["task_target"] = JSONObject(true).apply { put("type","TEAM"); put("instanceId",instanceId); put("ownerId",team.ownerChatterId); put("teamId",team.teamId); put("mode","FIXED"); put("teamMemberId",member.teamMemberId) }
+                val sid = client?.sessionId ?: member.sessionId
+                row["current_session"] = sid?.takeIf { it.isNotBlank() }?.let { JSONObject(true).apply {
+                    put("session_id",sid); put("session_ref",client?.historyReferenceForSession(sid)); put("history_available",client?.historyReferenceForSession(sid)!=null)
+                    if(client==null)put("history_unavailable_reason","当前实例没有可确认的活动会话历史")
+                } }
+                result.add(row)
+            }
+        }
+        return result
+    }
+
     private fun createFeatureInitializer(): AcpClientFeatureInitializer {
         return AcpClientFeatureInitializer(
             { context, client, robot ->
+                client.setAgentDirectory({ com.google.gson.JsonParser.parseString(agentDirectory.list(client.clientIdentity.logicalId).toJSONString()).asJsonObject },
+                    { namespace -> agentDirectory.allowsNamespace(client.clientIdentity.logicalId, namespace) })
+                val historyOwner = agentDirectory.historyOwner(client.clientIdentity.logicalId)
+                client.setPersistedHistoryAccess({ metadata -> agentDirectory.allowsPersistedOwner(client.clientIdentity.logicalId, JSON.parseObject(metadata.toString())) },
+                    historyOwner?.let { com.google.gson.JsonParser.parseString(it.toJSONString()).asJsonObject })
                 if (context.scope == AcpClientFeatureInitializer.Scope.MAIN) {
                     val logicalId = client.clientIdentity.logicalId
                     client.setSleepStateListener(object : AcpClient.SleepStateListener {
@@ -1655,7 +1722,54 @@ object AcpProxy {
                         client.clientIdentity)
                 }?.let { descriptor ->
                     val servers = com.google.gson.JsonArray()
-                    servers.add(descriptor.deepCopy())
+                    val mcp = checkNotNull(taskMcpServer)
+                    val caller = com.mola.cmd.proxy.app.acp.task.mcp.ClientTaskCaller(client, {
+                        val identity = client.clientIdentity
+                        val directory = com.mola.cmd.proxy.app.acp.task.dispatch.LocalTaskExecutionDirectory(
+                            CmdProxyHome.instanceId(), StarweaveIdentity.ownerId(CmdProxyHome.instanceId()),
+                            taskRobotRegistry, teamManager, null)
+                        val target = JSONObject(true)
+                        if (identity.isTeam) {
+                            val runtime = checkNotNull(teamManager).getRuntime(identity.teamId).orElseThrow {
+                                com.mola.cmd.proxy.app.acp.task.model.TaskException("CALLER_NOT_ELIGIBLE", "团队已不可用", 403)
+                            }
+                            val team = runtime.definition
+                            if (team.isMixedPlacement || team.ownerChatterId != identity.ownerId) {
+                                throw com.mola.cmd.proxy.app.acp.task.model.TaskException("CALLER_NOT_ELIGIBLE", "团队归属或部署方式不支持任务认领", 403)
+                            }
+                            val member = team.members.firstOrNull { it.teamMemberId == identity.teamMemberId }
+                                ?: throw com.mola.cmd.proxy.app.acp.task.model.TaskException("CALLER_NOT_ELIGIBLE", "团队成员已不可用", 403)
+                            JSONObject(true).apply {
+                                put("instanceId", CmdProxyHome.instanceId()); put("ownerId", identity.ownerId)
+                                put("surface", "STARWEAVE_TEAM"); put("teamId", identity.teamId)
+                                put("teamMemberId", identity.teamMemberId); put("agentId", member.sourceRobotId)
+                                put("groupId", member.sourceGroupId); put("acpClientId", member.acpClientId)
+                                put("robotNameSnapshot", member.sourceRobotName); put("displayNameSnapshot", member.displayName)
+                                put("placement", "LOCAL")
+                            }
+                        } else {
+                            target["type"] = "AGENT"; target["groupId"] = identity.logicalId
+                            directory.resolveAgent(target)
+                        }
+                    }, { ref ->
+                        try {
+                            val target = agentDirectory.resolveTaskTarget(client.clientIdentity.logicalId, ref)
+                            com.mola.cmd.proxy.app.acp.task.api.TaskApiBridge.getResolver().candidates(target)
+                            target
+                        } catch (e: Exception) {
+                            throw com.mola.cmd.proxy.app.acp.task.model.TaskException("TARGET_UNAVAILABLE", "执行者不可用，请重新 list_agents 选择：" + (e.message ?: "归属无法确认"), 409)
+                        }
+                    }, {
+                        val identity = client.clientIdentity
+                        if (identity.isTeam) {
+                            val runtime = checkNotNull(teamManager).getRuntime(identity.teamId).orElseThrow {
+                                com.mola.cmd.proxy.app.acp.task.model.TaskException("CALLER_NOT_ELIGIBLE", "团队已不可用", 403)
+                            }
+                            if (runtime.definition.isCaptainMode && !runtime.definition.isCaptain(identity.teamMemberId))
+                                throw com.mola.cmd.proxy.app.acp.task.model.TaskException("CALLER_NOT_ELIGIBLE", "队长模式的任务须由队长认领", 403)
+                        }
+                    })
+                    servers.add(mcp.registerCaller("http://127.0.0.1:${mcp.port}", caller) { hook -> client.addCloseHook(hook) })
                     client.setAdditionalMcpServers(servers)
                 }
                 initMemoryForClient(context.sourceGroupId, client, robot)
@@ -1698,6 +1812,8 @@ object AcpProxy {
                 manager,
                 null
             )
+            com.mola.cmd.proxy.app.acp.task.api.TaskApiBridge.installResolver(
+                com.mola.cmd.proxy.app.acp.task.dispatch.TaskTargetResolver(directory))
             val projector =
                 com.mola.cmd.proxy.app.acp.task.dispatch.ListenerTaskCardProjector(
                     registry, manager)

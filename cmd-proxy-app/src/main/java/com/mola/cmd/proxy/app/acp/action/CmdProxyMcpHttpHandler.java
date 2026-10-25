@@ -134,11 +134,13 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
         return tools(new java.util.LinkedHashSet<>(java.util.Arrays.asList(
                 "dispatch_subagent", "schedule_task", "manage_schedule", "talk_to", "new_session",
                 "manage_observation_channels", "test_observation_script", "query_observation_events",
-                "search_sessions", "read_session_history")));
+                "search_sessions", "read_session_history", "list_agents")));
     }
 
     public static JsonArray tools(Set<String> availableTools) {
         JsonArray tools = new JsonArray();
+        if(availableTools.contains("list_agents"))tools.add(tool("list_agents",
+                "无参数，只读列出调用者所属范围内的全部普通 Agent 和团队成员，含 agent_ref、运行状态及当前 session_id/session_ref。Starweave 与 MolaChat 严格隔离，MolaChat 仅同一 owner。session_ref 可传入 read_session_history；历史不可读时明确标注。发布指定执行者的任务时，将 task_assignable=true 条目的 agent_ref 传给 publish_task.assignee_ref。查询不启动或唤醒 Agent，不发送消息。", objectWithRequired(new String[0])));
         if (availableTools.contains("dispatch_subagent")) tools.add(tool("dispatch_subagent",
                 "将一个或多个相互独立的任务派发给可用子 Agent。tasks 中的任务可并行执行，"
                         + "同一 Agent 可被派发多个独立任务；调用将在全部任务结束后聚合返回结果。",
@@ -154,13 +156,13 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
 
         JsonObject scheduleTask = objectWithRequired(new String[]{"title", "prompt", "schedule"},
                 objectProperty("title", described(stringSchema(),
-                        "任务标题，用于识别和管理定时任务。")),
+                        "定时任务标题，用于识别和管理定时任务。")),
                 objectProperty("prompt", described(stringSchema(),
-                        "任务触发时提交给 Agent 的完整执行要求。")),
+                        "定时任务触发时提交给 Agent 的完整执行要求。")),
                 objectProperty("schedule", described(scheduleSchema(),
-                        "任务的调度配置。")));
+                        "定时任务的调度配置。")));
         JsonObject createSchema = objectSchema("tasks", described(arrayOf(scheduleTask),
-                "要创建的任务列表。一次调用可以创建多个独立定时任务。"));
+                "要创建的定时任务列表。一次调用可以创建多个独立定时任务。"));
         JsonObject groupNameSchema = stringSchema();
         groupNameSchema.addProperty("description",
                 "可选的会话分组，应用于本次 tasks 数组内的全部任务。默认省略；"
@@ -171,21 +173,21 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
         addProperty(createSchema, "groupName", groupNameSchema);
         if (availableTools.contains("schedule_task")) {
             tools.add(tool("schedule_task",
-                    "创建一个或多个定时任务。tasks 中每项分别提供 title、prompt 和 schedule，"
+                    "创建一个或多个定时任务，在指定时间或按周期发送提醒、触发 Agent 执行。tasks 中每项分别提供 title、prompt 和 schedule，"
                             + "并分别保存和执行；可选 groupName 应用于本次调用中的全部任务。",
                     createSchema));
         }
 
         JsonObject manage = objectSchema("operation", enumStringSchema(
                 new String[]{"list", "cancel", "update"},
-                "操作类型：list 查询任务，cancel 取消任务，update 更新任务。"));
+                "操作类型：list 查询定时任务，cancel 取消定时任务，update 更新定时任务。"));
         addProperty(manage, "taskId", described(stringSchema(),
-                "目标任务 ID。cancel 和 update 时必填，list 时省略。"));
+                "目标定时任务 ID。cancel 和 update 时必填，list 时省略。"));
         JsonObject updates = new JsonObject();
         updates.addProperty("type", "object");
         JsonObject updateProps = new JsonObject();
-        updateProps.add("title", described(stringSchema(), "新的任务标题。"));
-        updateProps.add("prompt", described(stringSchema(), "新的任务执行要求。"));
+        updateProps.add("title", described(stringSchema(), "新的定时任务标题。"));
+        updateProps.add("prompt", described(stringSchema(), "新的定时任务执行要求。"));
         updateProps.add("schedule", described(scheduleSchema(),
                 "新的调度配置，必须同时提供 type 和 expr。"));
         updates.add("properties", updateProps);
@@ -294,7 +296,7 @@ public final class CmdProxyMcpHttpHandler implements HttpHandler {
     }
 
     private static boolean isActionTool(String name) {
-        return "dispatch_subagent".equals(name) || "schedule_task".equals(name)
+        return "list_agents".equals(name) || "dispatch_subagent".equals(name) || "schedule_task".equals(name)
                 || "manage_schedule".equals(name) || "talk_to".equals(name)
                 || "new_session".equals(name) || "manage_observation_channels".equals(name)
                 || "test_observation_script".equals(name) || "query_observation_events".equals(name)

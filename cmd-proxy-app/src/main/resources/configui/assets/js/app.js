@@ -2,6 +2,7 @@ installEnvironmentGuards();
 installChatRecoveryListeners();
 (async function init(){
 restoreSidebarState();
+initializeStarweaveViewport();
 await loadInstances(false);
 await loadConfig();
 switchPage('sessions');

@@ -36,12 +36,12 @@ public class PromptOptions {
     /** All sends in a logical turn share a cascade, including forwards to a third member. */
     private TalkToTrace talkToParent;
     /** Stable Starweave task identity for precise suspend/cancel handling. */
-    private String taskId;
-    private String taskEventId;
-    private Long taskEventSeq;
-    private Long taskRevision;
-    private Long taskContentVersion;
-    private boolean taskControl;
+    private volatile String taskId;
+    private volatile String taskEventId;
+    private volatile Long taskEventSeq;
+    private volatile Long taskRevision;
+    private volatile Long taskContentVersion;
+    private volatile boolean taskControl;
     private String clientMessageId;
     public PromptOptions setClientMessageId(String id) { clientMessageId = id; return this; }
     public synchronized String getClientMessageId() { return clientMessageId; }
@@ -176,12 +176,12 @@ public class PromptOptions {
         if (taskId == null || taskId.trim().isEmpty()) {
             throw new IllegalArgumentException("taskId must not be blank");
         }
-        this.taskId = taskId.trim();
         this.taskEventId = eventId;
         this.taskEventSeq = eventSeq;
         this.taskRevision = revision;
         this.taskContentVersion = contentVersion;
         this.taskControl = taskControl;
+        this.taskId = taskId.trim();
         return this;
     }
 

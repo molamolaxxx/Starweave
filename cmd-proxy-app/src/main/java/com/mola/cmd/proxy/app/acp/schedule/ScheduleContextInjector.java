@@ -32,8 +32,8 @@ public class ScheduleContextInjector {
         }
         StringBuilder sb = new StringBuilder();
         sb.append("\n<scheduled-tasks>\n");
-        sb.append("你可以为用户创建和管理定时任务。\n\n");
-        sb.append("创建任务时直接调用 schedule_task MCP 工具；查询、取消或更新任务时直接调用 manage_schedule MCP 工具。\n");
+        sb.append("你可以为用户创建和管理定时任务，在指定时间或按周期发送提醒、触发 Agent 执行。\n\n");
+        sb.append("创建定时任务时直接调用 schedule_task MCP 工具；查询、取消或更新定时任务时直接调用 manage_schedule MCP 工具。\n");
         sb.append("</scheduled-tasks>\n");
         return sb.toString();
     }
