@@ -577,7 +577,7 @@ SessionLifecycleEvent {
 | STARTING | 否 | 可暂存 | 否 | 否 | 否 | 是 | 否 |
 | READY | 是 | 是 | 是 | 是 | 否 | 是 | 否 |
 | BUSY | 否 | 可暂存 | 否 | 否 | 是 | 需先确认取消 | 否 |
-| ERROR | 否 | 否 | 否 | 否 | 否 | 是 | 是 |
+| ERROR | 恢复原会话后发送 | 是 | 是 | 否 | 否 | 是 | 是 |
 | CLOSING | 否 | 否 | 否 | 否 | 否 | 否 | 否 |
 | CLOSED | 否 | 否 | 否 | 否 | 否 | 是 | 是 |
 | RESTORING | 否 | 否 | 否 | 否 | 否 | 否 | 否 |
@@ -1044,7 +1044,7 @@ cmd-proxy-app/src/main/java/.../acp/channel/
 2. Starweave target 不出现在 `acpSyncRobots`，不注册 MolaChat group command，不发送 callback。
 3. MolaChat 与 Starweave 同名 robot 同时运行，session/history/schedule/TalkTo 不串。
 4. open 幂等：同 requestId 或已有 READY client 不重复创建。
-5. STARTING/BUSY/ERROR/CLOSING 状态下所有命令按矩阵拒绝。
+5. STARTING/BUSY/CLOSING 状态下按矩阵拒绝；ERROR 允许恢复原会话后发送和手动新建，规则见 [Agent 执行错误与会话恢复](acp-error-recovery.md)。
 6. cancel 成功、取消失败和 terminal 事件单一性。
 7. new/restore replacement generation 单调增加，迟到旧事件被隔离。
 8. snapshot + SSE gap replay、重复 event 去重、队列溢出 resync。

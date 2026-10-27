@@ -59,4 +59,59 @@ public class StarweaveHistoryPageTest {
         }
         assertEquals(10020, count);
     }
+    @Test public void businessCardsKeepTextSegmentsAcrossPaginationAndRestart() throws Exception {
+        for (String type : new String[]{"SCHEDULE_EVENT", "SUB_AGENT_EVENT", "TALK_TO_EVENT",
+                "TASK_EVENT", "TASK_CREATED", "COMPACTION_COMPLETED", "LIFECYCLE_EVENT", "USER_MESSAGE_ACCEPTED"}) {
+            Path root = temp.newFolder().toPath();
+            StarweaveSessionEventStore store = new StarweaveSessionEventStore(8, root);
+            store.append("g", "s", "turn", 1, "ASSISTANT_MESSAGE_DELTA", payload("text", "准备执行。"));
+            JSONObject card = payload("eventId", "card"); card.put("source", "CHANNEL");
+            store.append("g", "s", "turn", 1, type, card);
+            store.append("g", "s", "turn", 1, "ASSISTANT_MESSAGE_DELTA", payload("text", "执行完成。"));
+            if (type.startsWith("TASK_")) store.append("g", "s", "turn", 1, type, card);
+            store.append("g", "s", "turn", 1, "SESSION_STATE_CHANGED", new JSONObject());
+            store.append("g", "s", "turn", 1, "ASSISTANT_MESSAGE_DELTA", payload("text", "继续说明。"));
+            store.append("g", "s", "turn", 1, "TURN_COMPLETED", new JSONObject());
+            for (int restart = 0; restart < 2; restart++) {
+                JSONObject latest = store.historyPage("g", "s", null, 2);
+                JSONArray rows = latest.getJSONArray("events");
+                assertEquals(type, 2, rows.size());
+                assertEquals(type, rows.getJSONObject(0).getString("type"));
+                assertEquals("执行完成。继续说明。", rows.getJSONObject(1).getJSONObject("payload").getString("text"));
+                JSONObject older = store.historyPage("g", "s", latest.getString("olderCursor"), 2);
+                JSONArray before = older.getJSONArray("events");
+                assertEquals(type, 1, before.size());
+                assertEquals("准备执行。", before.getJSONObject(0).getJSONObject("payload").getString("text"));
+                assertNotEquals(before.getJSONObject(0).getString("messageId"), rows.getJSONObject(1).getString("messageId"));
+                assertFalse(older.getBooleanValue("hasMore"));
+                store = new StarweaveSessionEventStore(8, root);
+            }
+        }
+    }
+
+    @Test public void rebuildsLegacyCachedPagesWithoutChangingOriginalJournal() throws Exception {
+        Path root = temp.newFolder().toPath();
+        StarweaveSessionEventStore store = new StarweaveSessionEventStore(8, root);
+        store.append("g", "s", "turn", 1, "ASSISTANT_MESSAGE_DELTA", payload("text", "before"));
+        store.append("g", "s", "turn", 1, "SCHEDULE_EVENT", payload("detail", "created"));
+        store.append("g", "s", "turn", 1, "ASSISTANT_MESSAGE_DELTA", payload("text", "after"));
+        Path journal;
+        try (java.util.stream.Stream<Path> files = java.nio.file.Files.walk(root)) {
+            journal = files.filter(path -> path.getFileName().toString().equals("events.jsonl")).findFirst().get();
+        }
+        byte[] original = java.nio.file.Files.readAllBytes(journal);
+        String legacyVersion = "v1:" + java.nio.file.Files.size(journal) + ":"
+                + java.nio.file.Files.getLastModifiedTime(journal).toMillis();
+        new com.mola.cmd.proxy.app.acp.common.ChatHistoryPages(journal.resolveSibling("message-pages"), "g\ns")
+                .page(legacyVersion, () -> {
+                    JSONObject legacy = new JSONObject(); legacy.put("items", new JSONArray());
+                    legacy.put("replayAfter", 3L); return legacy;
+                }, null, 50);
+        JSONObject page = new StarweaveSessionEventStore(8, root).historyPage("g", "s", null, 50);
+        assertEquals(3, page.getJSONArray("events").size());
+        assertEquals("before", page.getJSONArray("events").getJSONObject(0).getJSONObject("payload").getString("text"));
+        assertEquals("after", page.getJSONArray("events").getJSONObject(2).getJSONObject("payload").getString("text"));
+        assertArrayEquals(original, java.nio.file.Files.readAllBytes(journal));
+    }
+
 }

@@ -58,3 +58,9 @@ NO_CLAIMABLE_TASKS 是正常无任务结果，claimed=false、isError=false，�
 任务 MCP 为各 client 注入独立的不透明 Authorization Header，绑定服务端调用身份，关闭 client 后撤销。HTTP 和 SSE 均校验凭据；SSE 消息不能借用其他 caller 的 transport session。原有三个工具维持现有业务访问行为，新增写操作和本人筛选需要可信身份。调试日志隐藏 Header 值。
 
 远程执行复用既有 runtime 专属 MCP 转发，Header 必须完整保留；不把 Agent 名称作为身份凭据。新工具说明随 MCP 工具发现提供，已有会话应刷新/重新连接 MCP 以发现新工具和凭据。
+
+## 完成后通知发布 Agent
+
+任务成功转为 `COMPLETED` 时，如果存在可信的 `creatorIdentity` 且发布人与执行人身份不同，系统在同一事务中额外保存一条发给发布 Agent 的 `TASK_STATUS_CHANGED` 事件，标记 `recipientRole=PUBLISHER`。比较使用稳定身份字段，不使用展示名称；发布人与执行人为同一 Agent 时不额外通知。人工创建且未记录 Agent 发布者身份的任务不生成此通知，其他状态变更也不通知发布者。
+
+发布者通知具有独立的 eventId、投递状态与持久化回执，沿现有普通 Agent / 团队成员消息入口投递，按需唤醒会话；发布者忙碌时等待重试，服务重启后继续恢复。它不走执行者自身完成事件的仅卡片展示分支，也不把发布者绑定为已完成任务的执行者；会话历史仍将其识别为任务通知。通知提示发布 Agent 读取最新任务、评论和结果，验收并继续依赖工作，不重复执行已完成任务。即便任务随后被重开，已提交的完成通知仍会投递，接收方以 get_task 的最新状态为准。相同状态请求重试不重复生成通知。

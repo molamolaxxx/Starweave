@@ -307,9 +307,10 @@ public class TalkToDispatcher implements ExternalTalkToContactProvider {
                 authPrincipalContext, circuit.getTrace());
 
         // 8. 检查目标状态并投递
-        if (targetClient.getState() == AbstractAcpClient.State.SLEEP) {
+        if (targetClient.getState() == AbstractAcpClient.State.SLEEP
+                    || targetClient.getState() == AbstractAcpClient.State.ERROR) {
             try {
-                targetClient.wakeIfSleeping();
+                targetClient.prepareForMessage();
             } catch (IOException | RuntimeException wakeFailure) {
                 recentMessages.remove(dedupKey, now);
                 circuitBreaker.rollback(circuit,
@@ -325,6 +326,12 @@ public class TalkToDispatcher implements ExternalTalkToContactProvider {
             logger.info("talkTo 直接投递: {} → {}", senderName, target);
             return "[talkTo 结果]\n已成功将消息发送给 " + target + "。对方会处理你的请求，你可以继续当前工作。";
         } else {
+            if (targetClient.getState() != AbstractAcpClient.State.BUSY) {
+                recentMessages.remove(dedupKey, now);
+                circuitBreaker.rollback(circuit,
+                        senderGroupId == null ? senderName : senderGroupId, targetGroupId);
+                return "[talkTo 结果]\n发送失败：目标智能体当前不可用，请稍后重试。";
+            }
             // 放入 inbox
             // MAIN 的忙碌队列也必须绑定精确 client，不能退回 robotName 后跨 Chatter 串队列。
             LinkedBlockingQueue<TalkToMessage> inbox = inboxes.computeIfAbsent(
@@ -520,9 +527,10 @@ public class TalkToDispatcher implements ExternalTalkToContactProvider {
             return InboundDeliveryResult.rejected("TalkTo cascade is closed or expired");
         }
         synchronized (targetClient) {
-            if (targetClient.getState() == AbstractAcpClient.State.SLEEP) {
+            if (targetClient.getState() == AbstractAcpClient.State.SLEEP
+                    || targetClient.getState() == AbstractAcpClient.State.ERROR) {
                 try {
-                    targetClient.wakeIfSleeping();
+                    targetClient.prepareForMessage();
                 } catch (IOException | RuntimeException wakeFailure) {
                     return InboundDeliveryResult.rejected(
                             "agent wake failed: " + wakeFailure.getMessage());
@@ -535,6 +543,9 @@ public class TalkToDispatcher implements ExternalTalkToContactProvider {
                         routingKey, message.getSender());
                 return InboundDeliveryResult.direct();
             }
+        }
+        if (targetClient.getState() != AbstractAcpClient.State.BUSY) {
+            return InboundDeliveryResult.rejected("agent is not ready: " + targetClient.getState());
         }
         LinkedBlockingQueue<TalkToMessage> inbox = inboxes.computeIfAbsent(
                 routingKey, key -> new LinkedBlockingQueue<>(INBOX_CAPACITY));

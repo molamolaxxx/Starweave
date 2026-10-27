@@ -790,9 +790,10 @@ public final class StarweaveSessionManager {
             }
         }
         if (client == null || (client.getState() != AbstractAcpClient.State.READY
-                && (wakeSleeping || client.getState() != AbstractAcpClient.State.SLEEP))) {
+                && (wakeSleeping || (client.getState() != AbstractAcpClient.State.SLEEP
+                && client.getState() != AbstractAcpClient.State.ERROR)))) {
             throw new IllegalStateException(wakeSleeping
-                    ? "session is not READY" : "session is not READY or SLEEP");
+                    ? "session is not READY" : "session is not READY, SLEEP or ERROR");
         }
         if (!client.getClientIdentity().isStarweave()) {
             throw new IllegalStateException("session is not owned by Starweave");

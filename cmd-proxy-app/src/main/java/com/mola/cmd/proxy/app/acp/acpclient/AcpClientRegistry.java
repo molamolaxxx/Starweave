@@ -159,7 +159,7 @@ public class AcpClientRegistry {
         }
     }
 
-    /** Atomically replaces the exact READY client observed by the caller. */
+    /** Atomically replaces the exact client observed by the caller, including a failed runtime. */
     public AcpClient replaceSessionIfCurrent(String groupId, AcpClient expected,
                                              String targetRestoreSessionId,
                                              ClientInitializer initializer) throws Exception {
@@ -169,7 +169,8 @@ public class AcpClientRegistry {
                     || (current.getState() != AbstractAcpClient.State.READY
                     && !(targetRestoreSessionId == null
                     && current.getState() == AbstractAcpClient.State.SLEEP)
-                    && current.getState() != AbstractAcpClient.State.STARTING)) {
+                    && current.getState() != AbstractAcpClient.State.STARTING
+                    && current.getState() != AbstractAcpClient.State.ERROR)) {
                 return null;
             }
             String workspacePath = current.getWorkspacePath();
@@ -307,7 +308,7 @@ public class AcpClientRegistry {
                         "groupId=" + groupId + " 的会话不存在，请先调用 createSession");
             }
             try {
-                client.wakeIfSleeping();
+                client.prepareForMessage();
             } catch (IOException e) {
                 throw new IllegalStateException("唤醒智能体失败", e);
             }
@@ -323,10 +324,19 @@ public class AcpClientRegistry {
         }
     }
 
+    /** Prepares a sleeping or failed MAIN client for an inbound message. */
+    public boolean prepareForMessage(String groupId) throws IOException {
+        synchronized (sessionLock(groupId)) {
+            AcpClient client = clients.get(groupId);
+            return client != null && client.prepareForMessage();
+        }
+    }
+
     private PromptCommandResult wakeForRequest(AcpClient client) {
-        if (client.getState() != AbstractAcpClient.State.SLEEP) return null;
+        if (client.getState() != AbstractAcpClient.State.SLEEP
+                && client.getState() != AbstractAcpClient.State.ERROR) return null;
         try {
-            client.wakeIfSleeping();
+            client.prepareForMessage();
             return null;
         } catch (IOException | RuntimeException failure) {
             return PromptCommandResult.rejected(

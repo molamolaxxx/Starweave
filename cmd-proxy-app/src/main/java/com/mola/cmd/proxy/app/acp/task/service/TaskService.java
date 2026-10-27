@@ -182,6 +182,14 @@ public final class TaskService implements AutoCloseable {
             JSONObject statusChange=new JSONObject(true);statusChange.put("previousStatus",old);statusChange.put("status",next);statusChange.put("revision",t.getLong("revision"));statusChange.put("contentVersion",t.getLong("contentVersion"));statusChange.put("reason",reason);statusChange.put("actorName",actor);statusChange.put("actorType",actorType);statusChange.put("changedAt",t.getString("updatedAt"));t.put("lastStatusChange",statusChange);
             save(c,t,"STATUS_CHANGED",actor);
             if(Arrays.asList("SUSPENDED","CANCELLED","COMPLETED").contains(next))execute(c,"UPDATE task_outbox SET state='SUPERSEDED',lease_token=NULL,lease_until=0,error='Task no longer executable' WHERE task_id=? AND event_type IN ('TASK_CREATED','TASK_ASSIGNED','TASK_CONTENT_CHANGED') AND state IN ('PENDING','RETRY','PROCESSING')",id);
+            JSONObject publisher=t.getJSONObject("creatorIdentity"),assignee=t.getJSONObject("assignee");
+            if("COMPLETED".equals(next)&&publisher!=null
+                    &&(assignee==null||!identityKey(publisher).equals(identityKey(assignee)))) {
+                JSONObject notification=new JSONObject(new java.util.LinkedHashMap<>(statusChange));
+                notification.put("recipientRole","PUBLISHER");
+                event(c,t,"TASK_STATUS_CHANGED",notification,publisher);
+            }
+            // Notify the publisher before executor delivery, which may be unavailable.
             if(t.getJSONObject("assignee")!=null||!"OPEN".equals(t.getString("dispatchMode")))event(c,t,"TASK_STATUS_CHANGED",statusChange);
             if("START".equals(next)||("SUSPENDED".equals(old)&&"IN_PROGRESS".equals(next)))ensureExecution(c,t);
             return detail(c,t,new JSONObject());}));

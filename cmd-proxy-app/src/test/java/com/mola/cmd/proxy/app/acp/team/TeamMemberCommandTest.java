@@ -37,6 +37,57 @@ public class TeamMemberCommandTest {
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void observationRecoversErrorWithoutReplacingMemberSession() throws Exception {
+        Fixture fixture = fixture();
+        try {
+            TestClient client = fixture.current.get();
+            client.getRobotParam().setObservationEnabled(true);
+            client.setClientState(AbstractAcpClient.State.ERROR);
+            fixture.manager.onMemberState("team-1", "member-1", TeamMemberState.ERROR, null);
+            assertTrue(fixture.manager.sendObservation(ScheduleOwnerKey.team(
+                    "owner-1", "team-1", "member-1", "Robot One"), "observed-change"));
+            assertSame(client, fixture.current.get());
+            assertEquals("observed-change", client.message);
+            assertEquals(1, client.recoveryCount);
+        } finally { fixture.manager.close(); }
+    }
+
+    @Test
+    public void memberMessageRecoversErrorAndFailedRecoveryCanBeRetried() throws Exception {
+        Fixture fixture = fixture();
+        try {
+            TestClient client = fixture.current.get();
+            client.setClientState(AbstractAcpClient.State.ERROR);
+            fixture.manager.onMemberState("team-1", "member-1", TeamMemberState.ERROR, null);
+            client.failRecovery = true;
+            String payload = basePayload().replace("}", ",\"message\":\"continue\"}");
+            assertEquals("false", fixture.handler.handleSend("retry-fails", one(payload)).get("accepted"));
+            assertEquals(TeamMemberState.ERROR, fixture.manager.getRuntime("team-1").get()
+                    .getDefinition().getMembers().get(0).getState());
+            client.failRecovery = false;
+            assertEquals("true", fixture.handler.handleSend("retry-ok", one(payload)).get("accepted"));
+            assertEquals("continue", client.message);
+            assertEquals(2, client.recoveryCount);
+        } finally { fixture.manager.close(); }
+    }
+
+    @Test
+    public void scheduledGroupRecoversErrorAndKeepsBoundSession() throws Exception {
+        Fixture fixture = fixture();
+        try {
+            TestClient client = fixture.current.get();
+            ScheduleOwnerKey owner = ScheduleOwnerKey.team("owner-1", "team-1", "member-1", "Robot One");
+            fixture.scheduleTaskManager.bindGroupSession(owner, "daily", client.getSessionId());
+            client.setClientState(AbstractAcpClient.State.ERROR);
+            fixture.manager.onMemberState("team-1", "member-1", TeamMemberState.ERROR, null);
+            assertTrue(fixture.manager.executeScheduledPrompt(owner, "scheduled-retry", "daily", "next-trigger"));
+            assertSame(client, fixture.current.get());
+            assertEquals("next-trigger", client.message);
+            assertEquals(1, client.recoveryCount);
+        } finally { fixture.manager.close(); }
+    }
+
+    @Test
     public void manualNewSessionReplacesSleepingMemberWithoutWaking() throws Exception {
         Fixture fixture = fixture();
         try {
@@ -644,6 +695,17 @@ public class TeamMemberCommandTest {
         private boolean closed;
         private PromptOptions promptOptions;
         private boolean allowAutomaticRotation;
+        @Override public boolean trySendObservation(String prompt) { message = prompt; return true; }
+        private boolean failRecovery;
+        private int recoveryCount;
+        @Override public synchronized boolean prepareForMessage() throws IOException {
+            if (getState() != State.ERROR) return super.prepareForMessage();
+            recoveryCount++;
+            if (failRecovery) throw new IOException("planned restore failure");
+            state.set(State.READY);
+            return true;
+        }
+
 
         private TestClient(AcpClientIdentity identity, AcpRobotParam robot,
                            String sessionId) {

@@ -42,6 +42,12 @@ public final class TaskCardEventFactory {
             payload.put("eventContentVersion", eventContentVersion);
         }
         if (eventPayload != null) {
+            copyIfPresent(eventPayload, payload, "recipientRole");
+            // Publisher notifications describe the committed completion, even after a reopen.
+            if ("PUBLISHER".equals(eventPayload.getString("recipientRole"))) {
+                copyIfPresent(eventPayload, payload, "status");
+                copyIfPresent(eventPayload, payload, "contentVersion");
+            }
             copyIfPresent(eventPayload, payload, "previousContentVersion");
             copyIfPresent(eventPayload, payload, "changeRange");
             copyIfPresent(eventPayload, payload, "previousStatus");

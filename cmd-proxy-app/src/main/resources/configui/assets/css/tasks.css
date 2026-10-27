@@ -2,3 +2,22 @@
 .task-delivery{color:#637083}.task-delivery.in-progress{color:#a56816}.task-delivery.completed{color:#168451}.task-delivery.cancelled{color:#c64655}.task-delivery.suspended{color:#7556a8}
 
 .task-relations{max-height:160px;max-height:min(160px,25dvh);overflow:auto;overscroll-behavior:contain;font-size:12px;line-height:1.8;overflow-wrap:anywhere;margin-top:6px}.task-relations .btn{margin:2px 4px 2px 0;max-width:100%;white-space:normal;text-align:left}
+
+/* Keep primary filters and date filters on separate rows. */
+.toolbar.task-toolbar{display:flex;flex-direction:column;align-items:stretch;gap:12px;padding:16px}
+.task-filter-primary,.task-filter-secondary{display:grid;grid-template-columns:minmax(240px,1fr) minmax(150px,200px) minmax(190px,280px);align-items:center;gap:12px;min-width:0}
+.task-toolbar .task-filter-primary .search-box{grid-column:auto;min-width:0;width:100%}
+.task-filter-primary select{min-width:0;width:100%;text-overflow:ellipsis}
+.task-date-range{display:flex;align-items:center;min-width:0;height:40px;border:1px solid #dce2ea;border-radius:9px;background:var(--sw-surface,#fff);overflow:hidden}.task-date-range:focus-within{border-color:var(--sw-primary)}
+.task-date-label{flex-shrink:0;padding:0 12px;color:var(--sw-muted,#778196);font-size:12px;white-space:nowrap}
+.task-toolbar .task-filter-dates{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:8px;grid-column:auto;flex:1;width:auto;max-width:100%;min-width:0;padding-right:8px}
+.task-toolbar .task-filter-dates input{width:100%;min-width:0;height:38px;border:0;border-radius:0;background:transparent;padding:0 6px;box-shadow:none}
+.task-filter-secondary>.btn{grid-column:3;justify-self:end;white-space:nowrap;min-height:40px}
+.task-list-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:18px;color:#8992a2;font-size:12px}
+.task-pagination-controls{display:flex;align-items:center;justify-content:flex-end;gap:16px;flex-wrap:wrap;min-width:0}
+.task-pagination-controls select{height:36px;padding:0 10px;border:1px solid var(--sw-border);border-radius:9px;background:var(--sw-surface,#fff);color:var(--sw-text,#4d596b);font:inherit}
+.task-pagination-controls .pagination{margin:0;padding:0;border:0;display:flex;flex-direction:row;align-items:center;gap:12px}
+@media(max-width:1200px){.task-filter-primary{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.task-toolbar .task-filter-primary .search-box{grid-column:1/-1}.task-filter-secondary{grid-template-columns:minmax(0,1fr) auto}.task-filter-secondary>.btn{grid-column:2}}
+@media(max-width:600px){.task-filter-secondary{display:block;position:relative}.task-date-range{display:block;height:auto;padding-bottom:4px}.task-date-label{display:flex;align-items:center;height:36px;padding:0 12px;margin:0}.task-toolbar .task-filter-dates{width:100%;height:40px;gap:6px;padding:0 6px;border:0;border-radius:0;background:transparent}.task-toolbar .task-filter-dates:focus-within{border-color:var(--sw-primary)}.task-toolbar .task-filter-dates input{padding:0 6px;font-size:12px}.task-filter-secondary>.btn{position:absolute;right:5px;top:1px;padding:6px 8px;min-height:34px}.task-list-footer{gap:10px}.task-pagination-controls{width:100%;justify-content:space-between;gap:10px}.task-pagination-controls .pagination{flex-wrap:wrap}}
+
+html[data-theme="dark"] .task-date-range,html[data-theme="dark"] .task-toolbar .task-filter-dates{border-color:var(--sw-border)}

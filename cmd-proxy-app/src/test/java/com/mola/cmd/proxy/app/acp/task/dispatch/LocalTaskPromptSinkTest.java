@@ -24,4 +24,23 @@ public class LocalTaskPromptSinkTest {
     }
 
     @Test public void selfStatusNotificationsProjectWithoutStartingAnotherTurn(){AtomicInteger projected=new AtomicInteger();LocalTaskPromptSink sink=new LocalTaskPromptSink(AcpClientRegistry.getInstance(),null,(assignee,card)->projected.incrementAndGet());JSONObject assignee=new JSONObject();assignee.put("groupId","missing-is-fine-for-projection");JSONObject card=new JSONObject();card.put("eventType","TASK_STATUS_CHANGED");card.put("status","COMPLETED");card.put("actorType","AGENT");assertTrue(sink.submit(assignee,card,"must not be sent"));assertEquals(1,projected.get());}
+    @Test public void publisherCompletionOpensSessionInsteadOfOnlyProjectingAgentStatus() {
+        AtomicInteger opens = new AtomicInteger();
+        LocalTaskPromptSink sink = new LocalTaskPromptSink(AcpClientRegistry.getInstance(), null,
+                (recipient, card) -> fail("Publisher notification must start a turn"),
+                recipient -> opens.incrementAndGet());
+        JSONObject recipient = new JSONObject();
+        recipient.put("groupId", "missing-task-publisher");recipient.put("surface", "STARWEAVE");
+        JSONObject card = new JSONObject();card.put("eventType", "TASK_STATUS_CHANGED");
+        card.put("status", "COMPLETED");card.put("actorType", "AGENT");card.put("recipientRole", "PUBLISHER");
+        com.mola.cmd.proxy.app.acp.acpclient.PromptOptions options = LocalTaskPromptSink.taskOptions(card);
+        assertFalse(options.isTaskTurn());
+        assertNull(options.getTaskId());
+        assertTrue(options.isTaskNotification());
+        assertFalse(options.isTaskControl());
+        assertTrue(options.forNewSession().isTaskNotification());
+        assertFalse(sink.submit(recipient, card, "completion"));
+        assertEquals(1, opens.get());
+    }
+
 }

@@ -80,13 +80,16 @@ public final class TaskDispatchService implements AutoCloseable {
             }
             JSONObject view = taskService.get(event.getString("taskId"), new JSONObject(true));
             JSONObject task = view.getJSONObject("task");
-            JSONObject assignee = task == null ? null : task.getJSONObject("assignee");
-            if (assignee == null) {
-                repository.discard(eventId, token, "Task has no assignee");
+            JSONObject eventPayload = event.getJSONObject("payload");
+            boolean publisherNotification = eventPayload != null
+                    && "PUBLISHER".equals(eventPayload.getString("recipientRole"));
+            JSONObject recipient = publisherNotification ? event.getJSONObject("assignee")
+                    : task.getJSONObject("assignee");
+            if (recipient == null) {
+                repository.discard(eventId, token, "Task event has no recipient");
                 return;
             }
-            JSONObject eventPayload = event.getJSONObject("payload");
-            if ("TASK_STATUS_CHANGED".equals(event.getString("eventType"))
+            if (!publisherNotification && "TASK_STATUS_CHANGED".equals(event.getString("eventType"))
                     && eventPayload != null && eventPayload.getLong("revision") != null
                     && eventPayload.getLongValue("revision") < task.getLongValue("revision")) {
                 repository.discard(eventId, token, "A newer task status revision exists");
@@ -107,13 +110,13 @@ public final class TaskDispatchService implements AutoCloseable {
             }
             JSONObject card = cards.create(event, view, "PENDING_ACCEPTANCE",
                     taskViewUrl(event.getString("taskId")));
-            TaskDeliveryAdapter adapter = deliveryRouter.route(new JSONObject(assignee));
+            TaskDeliveryAdapter adapter = deliveryRouter.route(new JSONObject(recipient));
             if (adapter == null) {
-                retry(event, token, "No trusted route to task assignee");
+                retry(event, token, "No trusted route to task recipient");
                 return;
             }
             TaskDeliveryAdapter.DeliveryResult delivered = adapter.deliver(
-                    new JSONObject(assignee), card, agentPrompt(card));
+                    new JSONObject(recipient), card, agentPrompt(card));
             finish(event, token, delivered);
         } catch (RuntimeException failure) {
             retry(event, token, safeMessage(failure));
@@ -182,6 +185,13 @@ public final class TaskDispatchService implements AutoCloseable {
                 + optional(card, "previousStatus") + optional(card, "reason")
                 + optional(card, "actorName") + optional(card, "actorType") + "\n";
         if ("TASK_STATUS_CHANGED".equals(card.getString("eventType"))) {
+            if ("PUBLISHER".equals(card.getString("recipientRole"))) {
+                return header + "A task you published has been completed by its assignee. "
+                        + "Call get_task to read the latest authoritative state, comments and results. "
+                        + "Review the outcome and continue any dependent work as appropriate. "
+                        + "This notification does not assign the completed task to you; "
+                        + "do not restart or duplicate it.";
+            }
             String status = card.getString("status");
             if ("SUSPENDED".equals(status)) {
                 return header + "This task has been suspended. Call get_task and treat its current "

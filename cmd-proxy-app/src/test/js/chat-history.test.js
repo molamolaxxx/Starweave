@@ -71,3 +71,42 @@ test('team older history cannot replace newer live revisions and completed chunk
  c.teamSessionPost=async()=>({messages:[],replayAfter:200});await c.refreshTeamSessionHistory();
  assert.equal(c.teamSession.liveItems.length,1);assert.equal(c.teamSession.liveItems[0].text,'next');
 });
+
+test('visible business cards split assistant text in realtime and normalized history',()=>{
+ const c=fixture();
+ for(const type of ['SCHEDULE_EVENT','SUB_AGENT_EVENT','TALK_TO_EVENT','TASK_EVENT','TASK_CREATED','COMPACTION_COMPLETED','LIFECYCLE_EVENT','USER_MESSAGE_ACCEPTED']) {
+  for(const normalized of [false,true]) {
+   const events=[
+    {eventSeq:1,turnId:'t',type:'ASSISTANT_MESSAGE_DELTA',payload:{text:'准备执行。'}},
+    {eventSeq:2,turnId:'t',type,payload:{eventId:'card',source:'CHANNEL'}},
+    {eventSeq:3,turnId:'t',type:'ASSISTANT_MESSAGE_DELTA',payload:{text:'执行完成。'}},
+    {eventSeq:4,turnId:'t',type:'ASSISTANT_MESSAGE_DELTA',payload:{text:'继续说明。'}}];
+   if(normalized){events[0].messageId='assistant:1';events[2].messageId='assistant:3';}
+   const items=c.reduceStarweaveEvents(events);
+   assert.equal(items.length,3,type);
+   assert.equal(items[0].text,'准备执行。',type);
+   assert.equal(items[2].text,'执行完成。继续说明。',type);
+   assert.notEqual(items[0].key,items[2].key,type);
+  }
+ }
+});
+test('duplicate task cards and hidden events do not split an active assistant segment',()=>{
+ const c=fixture();
+ const events=[
+  {eventSeq:1,turnId:'t',type:'TASK_EVENT',payload:{eventId:'one'}},
+  {eventSeq:2,turnId:'t',type:'ASSISTANT_MESSAGE_DELTA',payload:{text:'开始'}},
+  {eventSeq:3,turnId:'t',type:'TASK_EVENT',payload:{eventId:'one'}},
+  {eventSeq:4,turnId:'t',type:'SESSION_STATE_CHANGED',payload:{}},
+  {eventSeq:5,turnId:'t',type:'USER_MESSAGE_ACCEPTED',payload:{source:'HISTORY',content:'[Starweave Task]\ninternal'}},
+  {eventSeq:6,turnId:'t',type:'ASSISTANT_MESSAGE_DELTA',payload:{text:'结束'}}];
+ const items=c.reduceStarweaveEvents(events);
+ assert.equal(items.length,2);assert.equal(items[1].text,'开始结束');
+});
+test('a business card in another turn leaves the current turn segment intact',()=>{
+ const c=fixture();
+ const items=c.reduceStarweaveEvents([
+  {eventSeq:1,turnId:'first',type:'ASSISTANT_MESSAGE_DELTA',payload:{text:'开始'}},
+  {eventSeq:2,turnId:'other',type:'SCHEDULE_EVENT',payload:{}},
+  {eventSeq:3,turnId:'first',type:'ASSISTANT_MESSAGE_DELTA',payload:{text:'结束'}}]);
+ assert.equal(items.length,2);assert.equal(items[0].text,'开始结束');
+});

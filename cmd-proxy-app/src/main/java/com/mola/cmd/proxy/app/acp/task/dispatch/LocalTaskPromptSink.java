@@ -101,7 +101,12 @@ public final class LocalTaskPromptSink implements TaskPromptSink {
         return value == null ? "" : value.trim();
     }
 
-    private static PromptOptions taskOptions(JSONObject card) {
+    static PromptOptions taskOptions(JSONObject card) {
+        // The publisher receives a notification, not ownership of the completed child task.
+        // Binding the child here would also break source-task attribution for follow-up publishes.
+        if ("PUBLISHER".equals(card.getString("recipientRole"))) {
+            return PromptOptions.forTaskNotification();
+        }
         return PromptOptions.forTask(card.getString("taskId"), card.getString("eventId"),
                 card.getLong("taskEventSeq"), card.getLong("revision"),
                 card.getLong("contentVersion"),
@@ -120,6 +125,7 @@ public final class LocalTaskPromptSink implements TaskPromptSink {
         if (card == null || !"TASK_STATUS_CHANGED".equals(card.getString("eventType"))) {
             return false;
         }
+        if ("PUBLISHER".equals(card.getString("recipientRole"))) return false;
         String status = card.getString("status");
         return "START".equals(status) || "IN_PROGRESS".equals(status)
                 || ("AGENT".equals(card.getString("actorType"))

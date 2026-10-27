@@ -282,19 +282,22 @@ public final class TeamTalkToDispatcher extends TalkToDispatcher
                 team.getTeamId(), target.getTeamMemberId()).orElse(null);
         if (targetClient != null) {
             synchronized (targetClient) {
-                if (target.getState() == TeamMemberState.SLEEP
-                        && targetClient.getState() == AbstractAcpClient.State.SLEEP) {
+                if (targetClient.getState() == AbstractAcpClient.State.SLEEP
+                        || targetClient.getState() == AbstractAcpClient.State.ERROR) {
                     try {
-                        targetClient.wakeIfSleeping();
+                        targetClient.prepareForMessage();
                         stateObserver.onState(team.getTeamId(), target.getTeamMemberId(),
                                 TeamMemberState.READY, null);
                     } catch (IOException | RuntimeException wakeFailure) {
-                        return "[talkTo 结果]\n发送失败：目标成员唤醒失败："
+                        recentMessages.remove(dedupKey, now);
+                        circuitBreaker.rollback(circuit, sender.getTeamMemberId(), targetMemberId);
+                        return "[talkTo 结果]\n发送失败：目标成员恢复失败："
                                 + wakeFailure.getMessage();
                     }
                 }
                 if ((target.getState() == TeamMemberState.READY
-                        || target.getState() == TeamMemberState.SLEEP)
+                        || target.getState() == TeamMemberState.SLEEP
+                        || target.getState() == TeamMemberState.ERROR)
                         && targetClient.getState() == AbstractAcpClient.State.READY) {
                     stateObserver.onState(team.getTeamId(), target.getTeamMemberId(),
                             TeamMemberState.BUSY, null);
@@ -403,10 +406,10 @@ public final class TeamTalkToDispatcher extends TalkToDispatcher
             return InboundDeliveryResult.rejected("Team member not ready");
         }
         synchronized (targetClient) {
-            if (target.getState() == TeamMemberState.SLEEP
-                    && targetClient.getState() == AbstractAcpClient.State.SLEEP) {
+            if (targetClient.getState() == AbstractAcpClient.State.SLEEP
+                    || targetClient.getState() == AbstractAcpClient.State.ERROR) {
                 try {
-                    targetClient.wakeIfSleeping();
+                    targetClient.prepareForMessage();
                     stateObserver.onState(runtime.getDefinition().getTeamId(), teamMemberId,
                             TeamMemberState.READY, null);
                 } catch (IOException | RuntimeException wakeFailure) {
@@ -415,7 +418,8 @@ public final class TeamTalkToDispatcher extends TalkToDispatcher
                 }
             }
             if ((target.getState() == TeamMemberState.READY
-                    || target.getState() == TeamMemberState.SLEEP)
+                    || target.getState() == TeamMemberState.SLEEP
+                        || target.getState() == TeamMemberState.ERROR)
                     && targetClient.getState() == AbstractAcpClient.State.READY) {
                 stateObserver.onState(runtime.getDefinition().getTeamId(), teamMemberId,
                         TeamMemberState.BUSY, null);

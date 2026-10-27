@@ -152,7 +152,9 @@ public final class ChannelTalkToBridge {
                 }
             }
             if (result.getStatus() == TalkToDispatcher.InboundDeliveryResult.Status.REJECTED) {
-                replyFailureAsync(replyTarget, "当前处理队列已满，请稍后重试。");
+                replyFailureAsync(replyTarget, "inbox full".equals(result.getReason())
+                        ? "当前处理队列已满，请稍后重试。"
+                        : "消息未能提交，智能体恢复失败或当前不可用，请稍后重试。");
             }
             return result;
         } finally {

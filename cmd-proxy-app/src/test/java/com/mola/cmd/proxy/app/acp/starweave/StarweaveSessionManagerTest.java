@@ -40,6 +40,33 @@ public class StarweaveSessionManagerTest {
     public final TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
+    public void errorClientCanCreateNewSessionAndFailedCreationPreservesOld() throws Exception {
+        FakeFactory factory = new FakeFactory();
+        AcpClientRegistry registry = registry(factory);
+        try {
+            StarweaveSessionManager manager = manager(registry);
+            JSONObject opened = manager.open("Robot");
+            String group = opened.getString("groupId");
+            FakeClient original = (FakeClient) registry.getClient(group);
+            original.markError();
+            factory.failNextStart = true;
+            try {
+                manager.newSession(group, opened.getString("sessionId"), opened.getLongValue("generation"));
+                fail("planned failure");
+            } catch (IOException expected) { }
+            assertSame(original, registry.getClient(group));
+            assertFalse(original.closed);
+            assertEquals("ERROR", manager.status(group).getString("state"));
+            JSONObject next = manager.newSession(group, opened.getString("sessionId"),
+                    opened.getLongValue("generation"));
+            assertNotEquals(opened.getString("sessionId"), next.getString("sessionId"));
+            assertEquals(opened.getLongValue("generation") + 1, next.getLongValue("generation"));
+            assertTrue(original.closed);
+            assertEquals(0, original.wakeRotations);
+        } finally { registry.closeAllForShutdown(); }
+    }
+
+    @Test
     public void manualNewSessionReplacesExpiredSleepingClientWithoutWaking() throws Exception {
         FakeFactory factory = new FakeFactory();
         AcpClientRegistry registry = registry(factory);
@@ -688,6 +715,8 @@ public class StarweaveSessionManagerTest {
             }
             setSessionId("session-wake-" + sequence + "-" + (++wakeRotations));
         }
+
+        private void markError() { state.set(State.ERROR); }
 
         private void sleepWithExpiredSession() throws Exception {
             com.mola.cmd.proxy.app.acp.AutoNewSessionConfig config =

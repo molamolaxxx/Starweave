@@ -42,6 +42,8 @@ public class PromptOptions {
     private volatile Long taskRevision;
     private volatile Long taskContentVersion;
     private volatile boolean taskControl;
+    /** A task notification to its publisher, without execution ownership. */
+    private boolean taskNotification;
     private String clientMessageId;
     public PromptOptions setClientMessageId(String id) { clientMessageId = id; return this; }
     public synchronized String getClientMessageId() { return clientMessageId; }
@@ -60,6 +62,7 @@ public class PromptOptions {
         next.setChannelTurnContext(channelTurnContext);
         next.setAuthPrincipalContext(authPrincipalContext);
         next.talkToParent = talkToParent;
+        next.taskNotification = taskNotification;
         if (isTaskTurn()) {
             next.setTaskContext(taskId, taskEventId, taskEventSeq, taskRevision,
                     taskContentVersion, false);
@@ -169,6 +172,13 @@ public class PromptOptions {
     public Long getTaskRevision() { return taskRevision; }
     public Long getTaskContentVersion() { return taskContentVersion; }
     public boolean isTaskControl() { return taskControl; }
+    public boolean isTaskNotification() { return taskNotification; }
+
+    public static PromptOptions forTaskNotification() {
+        PromptOptions options = new PromptOptions();
+        options.taskNotification = true;
+        return options;
+    }
 
     public PromptOptions setTaskContext(String taskId, String eventId, Long eventSeq,
                                         Long revision, Long contentVersion,

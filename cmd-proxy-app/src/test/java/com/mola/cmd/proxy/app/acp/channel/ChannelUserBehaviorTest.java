@@ -48,6 +48,27 @@ public class ChannelUserBehaviorTest {
         assertEquals("hello", queued.getContent());
     }
 
+    @Test
+    public void channelMessageRecoversFailedClientBeforeDirectDelivery() throws Exception {
+        Fixture fixture = fixture(ChannelConfig.USER_BEHAVIOR_QUEUE);
+        fixture.client.failState(false);
+        assertEquals(TalkToDispatcher.InboundDeliveryResult.Status.DIRECT,
+                fixture.bridge.onEvent(event()).getStatus());
+        assertEquals(1, fixture.client.recoveryCount);
+        assertEquals(1, fixture.client.sendCount);
+    }
+
+    @Test
+    public void recoveryFailureRejectsChannelMessageInsteadOfLeavingItInInbox() throws Exception {
+        Fixture fixture = fixture(ChannelConfig.USER_BEHAVIOR_QUEUE);
+        fixture.client.failState(true);
+        assertEquals(TalkToDispatcher.InboundDeliveryResult.Status.REJECTED,
+                fixture.bridge.onEvent(event()).getStatus());
+        assertEquals(1, fixture.client.recoveryCount);
+        assertEquals(0, fixture.client.sendCount);
+        org.junit.Assert.assertNull(fixture.dispatcher.pollInbox("bound-group"));
+    }
+
     private static Fixture fixture(String userBehavior) throws Exception {
         ChannelBinding binding = new ChannelBinding();
         binding.setType(ChannelBinding.TYPE_MAIN);
@@ -108,6 +129,20 @@ public class ChannelUserBehaviorTest {
 
     private static final class RecordingBusyClient extends AcpClient {
         private int cancelCount;
+        private int recoveryCount;
+        private int sendCount;
+        private boolean failRecovery;
+        private void failState(boolean fail) { state.set(State.ERROR); failRecovery = fail; }
+        @Override public synchronized boolean prepareForMessage() throws IOException {
+            if (getState() != State.ERROR) return super.prepareForMessage();
+            recoveryCount++;
+            if (failRecovery) throw new IOException("planned restore failure");
+            state.set(State.READY);
+            return true;
+        }
+        @Override public void send(String input, java.util.List<Map<String, String>> files,
+                com.mola.cmd.proxy.app.acp.acpclient.PromptOptions options) { sendCount++; }
+
 
         private RecordingBusyClient() throws IOException {
             super(Files.createTempDirectory("channel-user-behavior-").toString(),

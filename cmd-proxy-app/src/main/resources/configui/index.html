@@ -91,14 +91,20 @@
 <div class="task-page-actions"><button class="btn btn-secondary" onclick="loadTasks(true)" title="刷新待办任务状态"><span class="material-icons">refresh</span>刷新</button><button class="btn btn-primary" onclick="openTaskCreate()"><span class="material-icons">add_task</span>创建待办任务</button></div>
 <div class="task-stats" id="taskStats" aria-label="待办任务状态统计"></div>
 <div class="toolbar task-toolbar">
+<div class="task-filter-primary">
 <div class="search-box"><span class="material-icons">search</span><input id="taskSearch" type="text" placeholder="搜索待办任务名称或 ID" oninput="scheduleTaskFilter()"><button class="search-clear" id="taskSearchClear" hidden onclick="clearTaskSearch()" title="清空搜索"><span class="material-icons">close</span></button></div>
 <select id="taskAssignmentFilter" onchange="onTaskFilter()"><option value="">全部分配情况</option><option value="UNCLAIMED">待认领</option><option value="PENDING_ASSIGNMENT">待分配</option><option value="ASSIGNED">已分配</option></select>
 <select id="taskAssigneeFilter" onchange="onTaskFilter()"><option value="">全部执行人</option></select>
+</div>
+<div class="task-filter-secondary">
+<div class="task-date-range">
+<span class="task-date-label">创建时间</span>
 <div class="task-filter-dates"><input id="taskCreatedFrom" type="date" aria-label="创建时间起" onchange="onTaskFilter()"><span>至</span><input id="taskCreatedTo" type="date" aria-label="创建时间止" onchange="onTaskFilter()"></div>
-<select id="taskPageSize" onchange="changeTaskPageSize()"><option value="10">每页 10 条</option><option value="20">每页 20 条</option><option value="50">每页 50 条</option></select>
+</div>
 <button class="btn btn-secondary" onclick="resetTaskFilters()"><span class="material-icons">filter_alt_off</span>重置</button>
 </div>
-<div class="card"><div class="card-body"><div class="task-list-head"><span>名称</span><span>状态</span><span>执行目标 / 成员</span><span>内容版本</span><span>更新时间</span><span>投递</span><span>状态操作</span><span>操作</span></div><div class="task-list" id="taskList"></div><div id="taskPagination"></div></div></div>
+</div>
+<div class="card"><div class="card-body"><div class="task-list-head"><span>名称</span><span>状态</span><span>执行目标 / 成员</span><span>内容版本</span><span>更新时间</span><span>投递</span><span>状态操作</span><span>操作</span></div><div class="task-list" id="taskList"></div><div class="task-list-footer"><span id="taskResultSummary">共 0 条</span><div class="task-pagination-controls"><select id="taskPageSize" aria-label="每页任务条数" onchange="changeTaskPageSize()"><option value="10">每页 10 条</option><option value="20">每页 20 条</option><option value="50">每页 50 条</option></select><div id="taskPagination"></div></div></div></div></div>
 </section>
 <section class="page-section" id="page-schedules">
 <div class="task-page-actions"><button class="btn btn-secondary" onclick="loadSchedules(true)" title="刷新定时任务"><span class="material-icons">refresh</span>刷新</button><button class="btn btn-secondary" onclick="openScheduleExecutions()"><span class="material-icons">history</span>全部执行记录</button></div>

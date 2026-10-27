@@ -178,7 +178,8 @@ value=value.replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)(?:\s+["']([^
 value=value.replace(/\[([^\]]+)\]\(([^\s)]+)(?:\s+["']([^"']*)["'])?\)/g,function(all,label,url,title){var parsed=parseStarFilePreviewTarget(url);if(!parsed||parsed.remote)return all;return token('<a class="star-file-link" href="'+esc(url)+'" data-file-target="'+esc(url)+'"'+(title?' title="'+esc(title)+'"':'')+'>'+inlineMarkdown(label)+'</a>')});
 value=value.replace(/<(https?:\/\/[^\s<>]+|mailto:[^\s<>]+)>/gi,function(all,url){return token('<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+esc(url)+'</a>')});
 value=value.replace(/(^|[\s(])(https?:\/\/[^\s<>"')\]]+)/gi,function(all,prefix,url){var trailing=url.match(/[.,!?;:]+$/),suffix=trailing?trailing[0]:'';if(suffix)url=url.slice(0,-suffix.length);return prefix+token('<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+esc(url)+'</a>')+suffix});
-value=esc(value);value=value.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');value=value.replace(/__([^_\n]+)__/g,'<strong>$1</strong>');value=value.replace(/~~([^~\n]+)~~/g,'<del>$1</del>');value=value.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');value=value.replace(/(^|[^_])_([^_\n]+)_(?!_)/g,'$1<em>$2</em>');
+// Underscores inside identifiers are literal, including Unicode identifiers.
+value=esc(value);value=value.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');value=value.replace(/(^|[^\p{L}\p{N}\p{M}_])__([^_\s](?:[^_\n]*?[^_\s])?)__(?![\p{L}\p{N}\p{M}_])/gu,'$1<strong>$2</strong>');value=value.replace(/~~([^~\n]+)~~/g,'<del>$1</del>');value=value.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');value=value.replace(/(^|[^\p{L}\p{N}\p{M}_])_([^_\s](?:[^_\n]*?[^_\s])?)_(?![\p{L}\p{N}\p{M}_])/gu,'$1<em>$2</em>');
 return value.replace(/\u0000(\d+)\u0000/g,function(all,index){return tokens[Number(index)]||''});
 }
 function splitMarkdownTableRow(line){

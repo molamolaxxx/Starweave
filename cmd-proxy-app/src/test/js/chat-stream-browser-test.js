@@ -43,12 +43,15 @@ async function run() {
     let browser;
     try {
         browser = await chromium.launch({executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox']});
-        for (const width of [390, 1440]) for (const lane of ['ordinary', 'team']) {
+        for (const width of [390, 1440]) for (const [lane, cardType] of [
+            ...['TOOL_CALL_UPDATED', 'SCHEDULE_EVENT', 'SUB_AGENT_EVENT', 'TALK_TO_EVENT', 'TASK_EVENT', 'COMPACTION_COMPLETED', 'LIFECYCLE_EVENT'].map(type => ['ordinary', type]),
+            ['team', 'TOOL_CALL_UPDATED']
+        ]) {
             const page = await browser.newPage({viewport: {width, height: 844}, isMobile: width < 500, hasTouch: width < 500});
             const errors = [];
             page.on('pageerror', error => errors.push(error.message));
             await page.goto(`http://127.0.0.1:${server.address().port}/`);
-            await page.evaluate(lane => {
+            await page.evaluate(({lane, cardType}) => {
                 curInstance = {instanceId: 'remote-test', remote: true};
                 refreshChannelBindingTargets = function() {};
                 activePage = 'sessions';
@@ -64,7 +67,7 @@ async function run() {
                     starSessions.selectedGroupId = 'g'; starSessions.lastSeq = 3; starSessions.followOutput = false;
                     starSessions.events = [
                         {eventSeq: 1, turnId: 'turn', type: 'ASSISTANT_MESSAGE_DELTA', payload: {text: before}},
-                        {eventSeq: 2, turnId: 'turn', type: 'TOOL_CALL_UPDATED', payload: tool},
+                        {eventSeq: 2, turnId: 'turn', type: cardType, payload: cardType === 'TOOL_CALL_UPDATED' ? tool : {detail: '业务卡片详情\n'.repeat(300), summary: '业务操作完成', eventId: 'custom-card'}},
                         {eventSeq: 3, turnId: 'turn', type: 'ASSISTANT_MESSAGE_DELTA', payload: {text: '结果'}}
                     ];
                     chatHistoryState(starSessions, starHistoryScope()).loaded = true;
@@ -80,12 +83,12 @@ async function run() {
                     showDialog('teamSessionDialog'); renderTeamSessionDetail();
                 }
                 window.box = document.getElementById(lane === 'ordinary' ? 'starSessionMessages' : 'teamSessionMessages');
-                window.refs = {before: box.querySelector('.assistant'), tool: box.querySelector('.tool-row'), after: box.querySelectorAll('.assistant')[1], image: box.querySelector('img'), details: box.querySelector('details'), detail: box.querySelector('.event-detail')};
+                window.refs = {before: box.querySelector('.assistant'), tool: box.querySelector('.event-card'), after: box.querySelectorAll('.assistant')[1], image: box.querySelector('img'), details: box.querySelector('details'), detail: box.querySelector('.event-detail')};
                 refs.details.open = true; refs.detail.scrollTop = 120;
                 box.scrollTop = 150;
                 scrollChatViewport(box, lane === 'ordinary' ? starSessions : teamSession, function() {});
                 window.anchorBefore = chatVisibleAnchor(box);
-            }, lane);
+            }, {lane, cardType});
             await frames(page);
             await page.waitForFunction(() => refs.image.complete && refs.image.naturalHeight > 0);
             await frames(page);
@@ -100,10 +103,10 @@ async function run() {
             await frames(page);
             const stable = await page.evaluate(() => ({
                 allConnected: Object.values(refs).every(node => node.isConnected),
-                sameRows: refs.before === box.querySelector('.assistant') && refs.tool === box.querySelector('.tool-row') && refs.after === box.querySelectorAll('.assistant')[1],
+                sameRows: refs.before === box.querySelector('.assistant') && refs.tool === box.querySelector('.event-card') && refs.after === box.querySelectorAll('.assistant')[1],
                 sameImage: refs.image === box.querySelector('img'),
                 expanded: refs.details.open, detailTop: refs.detail.scrollTop,
-                order: Array.from(box.querySelectorAll('.chat-message-content > .message-row')).map(node => node.classList.contains('assistant') ? 'text' : 'tool'),
+                order: Array.from(box.querySelectorAll('.chat-message-content > [data-chat-key]')).map(node => node.classList.contains('assistant') ? 'text' : 'tool'),
                 anchor: chatVisibleAnchor(box), previousAnchor: anchorBefore
             }));
             assert.equal(stable.allConnected, true); assert.equal(stable.sameRows, true); assert.equal(stable.sameImage, true);
@@ -112,7 +115,7 @@ async function run() {
             assert.equal(stable.anchor.key, stable.previousAnchor.key);
             assert.ok(Math.abs(stable.anchor.offset - stable.previousAnchor.offset) <= 2, JSON.stringify(stable));
             // Changing the tool payload preserves its expanded detail and internal scroll too.
-            await page.evaluate(lane => {
+            if (cardType === 'TOOL_CALL_UPDATED') await page.evaluate(lane => {
                 const payload = {toolCallId: 'tool1', title: '查询工具', status: 'completed', update: {output: '更新后的详情\n'.repeat(400)}};
                 if (lane === 'ordinary') {starSessions.events.push({eventSeq: 24, turnId: 'turn', type: 'TOOL_CALL_UPDATED', payload}); renderStarweaveEvents();}
                 else {appendTeamSessionEvent({teamId: 't', teamMemberId: 'm', eventSeq: 24, type: 'TOOL_CALL', data: {...payload, messageId: 'tool:tool1', revision: 24}}); renderTeamSessionMessages();}
@@ -120,12 +123,12 @@ async function run() {
             await frames(page);
             assert.equal(await page.evaluate(() => refs.tool.isConnected && refs.detail.isConnected && refs.details.open && refs.detail.scrollTop === 120), true);
             assert.deepEqual(errors, []);
-            console.log(`PASS ${width}px ${lane}: center SSE, text/tool/text order, stable rows/image, expanded tool scroll, reading anchor`);
+            console.log(`PASS ${width}px ${lane} ${cardType}: center SSE, text/tool/text order, stable rows/image, expanded tool scroll, reading anchor`);
             await page.close();
         }
-        assert.equal(streamUrls.length, 4);
+        assert.equal(streamUrls.length, 16);
         assert.ok(streamUrls.every(url => url.includes('instance=remote-test') && url.includes('after=3')));
-        assert.equal(imageRequests, 4);
+        assert.equal(imageRequests, 16);
     } finally {
         if (browser) await browser.close();
         await new Promise(resolve => server.close(resolve));

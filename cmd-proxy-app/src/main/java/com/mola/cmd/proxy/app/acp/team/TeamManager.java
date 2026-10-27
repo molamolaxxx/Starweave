@@ -1067,11 +1067,11 @@ public final class TeamManager implements AutoCloseable {
             }
             AcpClient old = clientRegistry.get(
                     team.getTeamId(), member.getTeamMemberId()).orElse(null);
-            if (old != null && member.getState() == TeamMemberState.SLEEP
-                    && old.getState() == AbstractAcpClient.State.SLEEP) {
+            if (old != null && (old.getState() == AbstractAcpClient.State.SLEEP
+                    || old.getState() == AbstractAcpClient.State.ERROR)) {
                 publishMemberState(runtime, member.getTeamMemberId(),
                         TeamMemberState.STARTING, null);
-                old.wakeIfSleeping();
+                old.prepareForMessage();
                 publishMemberState(runtime, member.getTeamMemberId(),
                         TeamMemberState.READY, null);
                 team = runtime.getDefinition();
@@ -1208,8 +1208,9 @@ public final class TeamManager implements AutoCloseable {
             AcpClient client = clientRegistry.get(owner.getTeamId(), owner.getTeamMemberId()).orElse(null);
             if (member == null || client == null || client.getRobotParam() == null
                     || !client.getRobotParam().isObservationEnabled()) return false;
-            if (client.getState() == AbstractAcpClient.State.SLEEP) {
-                client.wakeIfSleeping();
+            if (client.getState() == AbstractAcpClient.State.SLEEP
+                    || client.getState() == AbstractAcpClient.State.ERROR) {
+                client.prepareForMessage();
                 publishMemberState(runtime, owner.getTeamMemberId(), TeamMemberState.READY, null);
             }
             if (client.getState() != AbstractAcpClient.State.READY) return false;
@@ -3100,17 +3101,24 @@ public final class TeamManager implements AutoCloseable {
     private AcpClient requireReadyClient(MemberRoute route)
             throws MemberRouteException {
         AcpClient client = requireExistingClient(route);
-        if (route.member.getState() == TeamMemberState.SLEEP
-                && client.getState() == AbstractAcpClient.State.SLEEP) {
+        if (client.getState() == AbstractAcpClient.State.SLEEP
+                || client.getState() == AbstractAcpClient.State.ERROR) {
             try {
                 publishMemberState(route.runtime, route.member.getTeamMemberId(),
                         TeamMemberState.STARTING, null);
-                client.wakeIfSleeping();
+                client.prepareForMessage();
                 publishMemberState(route.runtime, route.member.getTeamMemberId(),
                         TeamMemberState.READY, null);
             } catch (Exception e) {
+                try {
+                    publishMemberState(route.runtime, route.member.getTeamMemberId(),
+                            TeamMemberState.ERROR, TeamError.of(
+                                    TeamErrorCode.CLIENT_START_FAILED, safeMessage(e), true));
+                } catch (IOException projectionFailure) {
+                    logger.warn("记录成员恢复失败状态失败", projectionFailure);
+                }
                 throw new MemberRouteException(
-                        TeamErrorCode.CLIENT_START_FAILED, "唤醒 Team member 失败: " + safeMessage(e));
+                        TeamErrorCode.CLIENT_START_FAILED, "恢复 Team member 失败: " + safeMessage(e));
             }
         }
         if (client.getState() != AbstractAcpClient.State.READY) {

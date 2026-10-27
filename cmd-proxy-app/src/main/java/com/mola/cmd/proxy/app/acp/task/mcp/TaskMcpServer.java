@@ -441,7 +441,7 @@ public final class TaskMcpServer implements AutoCloseable {
             property("assigneeTeamId","string","团队 ID"),property("assigneeTeamMemberId","string","团队成员 ID"),property("assigneeName","string","执行者名称"),
             property("createdFrom","string","起始 UTC ISO 时间"),property("createdTo","string","截止 UTC ISO 时间"),
             property("page","integer","页码，默认 1"),property("pageSize","integer","单页条数，默认 20，最多 100")))));
-        tools.add(tool("publish_task", "发布待办任务。默认进入无人认领待办任务池、不投递消息；可先调用 acp-harness.list_agents，将可分配目标的 agent_ref 原样传入 assignee_ref，指定普通 Agent 或团队成员，系统随后投递执行消息。发布者和当前来源待办任务由服务端自动记录，不能伪造；可通过 get_task 查看来源和派生待办任务。", schema(properties(
+        tools.add(tool("publish_task", "发布待办任务。默认进入无人认领待办任务池、不投递消息；可先调用 acp-harness.list_agents，将可分配目标的 agent_ref 原样传入 assignee_ref，指定普通 Agent 或团队成员，系统随后投递执行消息。发布者和当前来源待办任务由服务端自动记录，不能伪造；可通过 get_task 查看来源和派生待办任务。任务完成且发布者与执行者不同时，发布 Agent 会收到完成状态通知并按需唤醒。", schema(properties(
             property("assignee_ref","string","可选：list_agents 返回且 task_assignable=true 的 agent_ref；不要填写名称或自行构造 ID"),property("name","string","待办任务名称"),property("contentMarkdown","string","待办任务要求 Markdown"),arrayProperty("attachmentIds","已上传附件 ID"),
             property("requestId","string","持久幂等键，超时后用原键和原参数重试")),"name","requestId")));
         tools.add(tool("claim_task", "为当前调用 Agent 认领待办任务，成功后继续执行，可组织团队协作，无需等待额外通知，不重复投递执行消息。指定 taskId 时须先 get_task 并携带最新版本；省略 taskId 则原子领取最早可认领待办任务。失败不要执行；超时用原 requestId 和参数确认结果，不得换键另领。", schema(properties(

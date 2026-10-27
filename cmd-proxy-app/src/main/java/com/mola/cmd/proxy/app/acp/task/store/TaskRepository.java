@@ -62,8 +62,12 @@ public final class TaskRepository implements AutoCloseable {
         event(c,t,type,payload);
     }
     public static void event(Connection c,JSONObject t,String type,JSONObject payload) throws SQLException {
+        event(c,t,type,payload,t.getJSONObject("assignee"));
+    }
+    /** Each recipient has its own durable event and delivery receipt. */
+    public static void event(Connection c,JSONObject t,String type,JSONObject payload,JSONObject recipient) throws SQLException {
         execute(c,"INSERT INTO task_outbox(event_id,task_id,content_version,event_type,seq,assignee,state,payload) SELECT ?,?,?,?,?,?,?,?",
-                UUID.randomUUID().toString(),t.getString("id"),t.getLongValue("contentVersion"),type,nextSequence(c,t.getString("id")),t.getJSONObject("assignee")==null?null:t.getJSONObject("assignee").toJSONString(),"PENDING",payload==null?null:payload.toJSONString());
+                UUID.randomUUID().toString(),t.getString("id"),t.getLongValue("contentVersion"),type,nextSequence(c,t.getString("id")),recipient==null?null:recipient.toJSONString(),"PENDING",payload==null?null:payload.toJSONString());
     }
     private static long nextSequence(Connection c,String id) throws SQLException {
         try(PreparedStatement s=c.prepareStatement("SELECT COALESCE(MAX(seq),0)+1 FROM task_outbox WHERE task_id=?")) { s.setString(1,id); try(ResultSet r=s.executeQuery()) { r.next(); return r.getLong(1); } }

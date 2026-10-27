@@ -1034,8 +1034,9 @@ object AcpProxy {
                 }
                 val client = registry.getClient(groupId)
                 if (client == null || (client.state != AbstractAcpClient.State.READY
-                        && client.state != AbstractAcpClient.State.SLEEP)) {
-                    resultMap["result"] = "当前client状态不为READY或SLEEP，不允许清除上下文"
+                        && client.state != AbstractAcpClient.State.SLEEP
+                        && client.state != AbstractAcpClient.State.ERROR)) {
+                    resultMap["result"] = "当前client状态不为READY、SLEEP或ERROR，不允许清除上下文"
                     return@register resultMap
                 }
 
@@ -1906,8 +1907,9 @@ object AcpProxy {
 
                 val client = registry.getClient(targetGroupId)
                     ?: throw RuntimeException("client 不存在, groupId=$targetGroupId")
-                if (client.state == AbstractAcpClient.State.SLEEP) {
-                    registry.wakeIfSleeping(targetGroupId)
+                if (client.state == AbstractAcpClient.State.SLEEP
+                    || client.state == AbstractAcpClient.State.ERROR) {
+                    registry.prepareForMessage(targetGroupId)
                 }
                 if (client.state != AbstractAcpClient.State.READY) {
                     log.info("定时任务跳过：client 忙碌, robot={}, state={}",
@@ -2383,11 +2385,10 @@ object AcpProxy {
             }
             val current = registry.getClient(target.groupId)
                 ?: return rejectedGatewayResult("TARGET_UNAVAILABLE", "Agent target is unavailable")
-            if (current.state == AbstractAcpClient.State.SLEEP) {
-                registry.wakeIfSleeping(target.groupId)
-            }
             if (!target.matches(current.clientIdentity) ||
-                current.state != AbstractAcpClient.State.READY) {
+                (current.state != AbstractAcpClient.State.READY
+                    && current.state != AbstractAcpClient.State.SLEEP
+                    && current.state != AbstractAcpClient.State.ERROR)) {
                 return rejectedGatewayResult("REJECTED_STATE", "Agent target is not READY")
             }
             val replacement = replaceMainSession(target.groupId, current, null)

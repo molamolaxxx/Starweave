@@ -55,6 +55,8 @@ public class AcpClientTaskTurnTest {
         assertEquals(ContextMessage.UserOrigin.TASK,
                 AcpClient.historyOrigin(PromptOptions.forTask(
                         "task-1", "event-1", 1L, 1L, 1L, false)));
+        assertEquals(ContextMessage.UserOrigin.TASK,
+                AcpClient.historyOrigin(PromptOptions.forTaskNotification()));
         assertEquals(ContextMessage.UserOrigin.CHANNEL,
                 AcpClient.historyOrigin(PromptOptions.forChannelReply(
                         new ChannelTurnContext("wecom", "reply", "group", "chat-1"))));

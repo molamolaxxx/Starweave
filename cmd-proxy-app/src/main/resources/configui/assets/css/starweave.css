@@ -24,3 +24,6 @@
 
 /* Keep a valid first-frame height on WebViews without dynamic viewport units. */
 @supports(height:100dvh){.session-layout{height:var(--session-viewport-height,calc(100dvh - 172px))}}
+
+button.session-agent-name{border:0;padding:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:default}
+button.session-agent-name:focus-visible{outline:2px solid var(--sw-primary);outline-offset:-2px;border-radius:5px}

@@ -138,8 +138,8 @@ public final class StarweaveSessionEventStore {
         Path journal = root == null ? null : journalPath(groupId, sessionId);
         try {
             String version = journal != null && Files.exists(journal)
-                    ? "v1:" + Files.size(journal) + ":" + Files.getLastModifiedTime(journal).toMillis()
-                    : "v1:" + sequences.getOrDefault(groupId, new AtomicLong()).get();
+                    ? "v2:" + Files.size(journal) + ":" + Files.getLastModifiedTime(journal).toMillis()
+                    : "v2:" + sequences.getOrDefault(groupId, new AtomicLong()).get();
             String key = groupId + "\n" + sessionId;
             ChatHistoryPages index = pages.computeIfAbsent(key, ignored -> new ChatHistoryPages(
                     journal == null ? tempPageDirectory() : journal.resolveSibling("message-pages"), key));
@@ -195,6 +195,8 @@ public final class StarweaveSessionEventStore {
                 else row.put("payload", payload);
                 row.put("revision", event.getLongValue("eventSeq")); continue;
             }
+            // Every visible card ends the current text segment, including business events.
+            assistants.remove(turn);
             JSONObject row = JSON.parseObject(event.toJSONString()); row.put("messageId", "event:" + event.getLongValue("eventSeq")); rows.add(row);
         }
         rows.removeIf(row -> "ASSISTANT_MESSAGE_DELTA".equals(row.getString("type")) && row.getJSONObject("payload").getString("text").trim().isEmpty());

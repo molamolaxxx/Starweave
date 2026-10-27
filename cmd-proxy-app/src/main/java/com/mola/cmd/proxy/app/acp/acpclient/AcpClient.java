@@ -594,6 +594,39 @@ public class AcpClient extends AbstractAcpClient {
         }
     }
 
+    /** Prepare a message without silently replacing a failed session with an empty one. */
+    public synchronized boolean prepareForMessage() throws IOException {
+        if (getState() == State.SLEEP) return wakeIfSleeping();
+        if (getState() != State.ERROR) return false;
+        String failedSessionId = sessionId;
+        if (failedSessionId == null || failedSessionId.trim().isEmpty()) {
+            throw new IOException("没有可恢复的会话，请新建会话");
+        }
+        if (!agentProvider.supportsSessionLoad()) {
+            throw new IOException("Provider 不支持恢复原会话，请新建会话");
+        }
+        lifecycleBoundary();
+        state.set(State.STARTING);
+        try {
+            historyManager.forceFlush(failedSessionId);
+            releaseRuntimeForSleep();
+            targetRestoreSessionId = failedSessionId;
+            forceNewSession = false;
+            restoredSession = false;
+            startRuntimeSession();
+            lastActivityAt.set(System.currentTimeMillis());
+            notifySessionReady();
+            return true;
+        } catch (IOException | RuntimeException failure) {
+            try { releaseRuntimeForSleep(); }
+            catch (RuntimeException cleanupFailure) { failure.addSuppressed(cleanupFailure); }
+            state.set(State.ERROR);
+            throw failure;
+        } finally {
+            targetRestoreSessionId = null;
+        }
+    }
+
     private void notifySleeping() {
         SleepStateListener listener = sleepStateListener;
         if (listener == null) return;
@@ -906,11 +939,11 @@ public class AcpClient extends AbstractAcpClient {
         if (!effectiveOptions.isInboundTalkTo()) consecutiveInboxTurns.set(0);
         final long generation;
         synchronized (this) {
-            if (getState() == State.SLEEP) {
+            if (getState() == State.SLEEP || getState() == State.ERROR) {
                 try {
-                    wakeIfSleeping();
+                    prepareForMessage();
                 } catch (IOException | RuntimeException failure) {
-                    outputListener.onError(new IOException("唤醒智能体失败", failure));
+                    outputListener.onError(new IOException("恢复智能体失败", failure));
                     return false;
                 }
             }
@@ -961,6 +994,7 @@ public class AcpClient extends AbstractAcpClient {
         try {
             executor.submit(() -> {
                 boolean succeeded = false;
+                Exception turnFailure = null;
                 try {
                     activeMcpListener.set(guardedListener);
                     activeMcpOptions.set(effectiveOptions);
@@ -984,11 +1018,7 @@ public class AcpClient extends AbstractAcpClient {
                     releaseMcpAuthBinding(effectiveOptions);
                     logger.error("ACP send 失败", e);
                     releaseChannelTurn(effectiveOptions);
-                    if (!recoverInterruptedTurnFailure(generation, guardedListener, e)
-                            && setStateIfActive(generation, State.ERROR)) {
-                        notifyAfterTurnFailed();
-                        guardedListener.onError(e);
-                    }
+                    if (!recoverInterruptedTurnFailure(generation, guardedListener, e)) turnFailure = e;
                 } finally {
                     activeMcpOptions.compareAndSet(effectiveOptions, null);
                     activeMcpListener.compareAndSet(guardedListener, null);
@@ -996,6 +1026,7 @@ public class AcpClient extends AbstractAcpClient {
                     queuedWorkCancellationPending.set(false);
                 }
                 if (succeeded) finishSuccessfulTurn(generation, effectiveOptions);
+                else if (turnFailure != null) finishFailedTurn(generation, guardedListener, turnFailure);
             });
         } catch (RejectedExecutionException e) {
             completeScheduleExecution(effectiveOptions, false,
@@ -1011,6 +1042,27 @@ public class AcpClient extends AbstractAcpClient {
             return false;
         }
         return true;
+    }
+
+    /** Emit the terminal error before reopening admission, after old turn context is released. */
+    void finishFailedTurn(long generation, AcpResponseListener listener, Exception error) {
+        if (!isLifecycleGenerationActive(generation)) return;
+        boolean reusable = error instanceof AcpPromptResponseException
+                && ((AcpPromptResponseException) error).isRetryableRequestFailure()
+                && process != null && process.isAlive();
+        try {
+            listener.onError(error);
+        } finally {
+            if (reusable) {
+                if (compareAndSetStateIfActive(generation, State.BUSY, State.READY)) {
+                    lastActivityAt.set(System.currentTimeMillis());
+                    notifyAfterTurnReady();
+                    if (getState() == State.READY) checkAndDeliverInbox();
+                }
+            } else if (setStateIfActive(generation, State.ERROR)) {
+                notifyAfterTurnFailed();
+            }
+        }
     }
 
     private void completeScheduleExecution(PromptOptions options, boolean success,
@@ -1548,7 +1600,7 @@ public class AcpClient extends AbstractAcpClient {
 
             // prompt response（JSON-RPC Response 没有 method 字段，排除 Request 误匹配）
             if (!msg.has("method") && msg.has("id") && requestId.equals(msg.get("id").getAsString())) {
-                if (msg.has("error")) throw new IOException("ACP prompt 返回错误: " + msg.get("error"));
+                if (msg.has("error")) throw new AcpPromptResponseException(msg.get("error"));
                 String stopReason = "unknown";
                 if (msg.has("result") && msg.getAsJsonObject("result").has("stopReason")) {
                     stopReason = msg.getAsJsonObject("result").get("stopReason").getAsString();
@@ -1607,7 +1659,7 @@ public class AcpClient extends AbstractAcpClient {
         if (options == null) {
             return com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage.UserOrigin.USER;
         }
-        if (options.isTaskTurn()) {
+        if (options.isTaskTurn() || options.isTaskNotification()) {
             return com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage.UserOrigin.TASK;
         }
         if (options.isInboundTalkTo()) {
