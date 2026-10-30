@@ -170,6 +170,32 @@ public class AcpClientSleepLifecycleTest {
         assertTrue(client.createdNew);
     }
 
+    @Test
+    public void mainSleepRequestsBackgroundMemorySleepForItsOwnSession() throws Exception {
+        FakeClient client = new FakeClient();
+        java.util.List<String> requests = new java.util.ArrayList<>();
+        client.setMemoryManager(new MemoryManagerBridge() {
+            @Override public void sleepSession(String sessionId) { requests.add(sessionId); }
+            @Override public String buildMemoryPrompt(String workspace) { return ""; }
+            @Override public void submitExtract(String session, String workspace,
+                    List<com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage> history) { }
+            @Override public void submitExtractFull(String session, String workspace,
+                    List<com.mola.cmd.proxy.app.acp.acpclient.context.ContextMessage> history,
+                    Runnable success, java.util.function.Consumer<Throwable> failure) { }
+            @Override public void incrementSessionCount(String workspace) { }
+            @Override public void onMemoryAccessed(String workspace, String path) { }
+        });
+        client.setSessionId("memory-owner");
+        client.readyAt(1_000L);
+        assertTrue(client.sleepIfIdle(61_000L, 60_000L));
+        assertFalse(client.sleepIfIdle(61_000L, 60_000L));
+        assertEquals(Collections.singletonList("memory-owner"), requests);
+        assertTrue(client.wakeIfSleeping());
+        assertEquals(1, requests.size());
+        assertTrue(client.restoreSleepAfterRestart());
+        assertEquals(java.util.Arrays.asList("memory-owner", "memory-owner"), requests);
+    }
+
     private static final class RecordingListener implements AcpResponseListener {
         private String lifecycleEvent;
 

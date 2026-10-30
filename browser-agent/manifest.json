@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Starweave 浏览器星核",
+  "version": "0.4.0",
+  "description": "连接 Starweave，在当前浏览器运行星核智能体。",
+  "minimum_chrome_version": "125",
+  "permissions": [
+    "storage",
+    "tabs",
+    "debugger",
+    "alarms",
+    "downloads",
+    "bookmarks",
+    "history",
+    "clipboardRead",
+    "clipboardWrite",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "options.html"
+  },
+  "options_page": "options.html",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

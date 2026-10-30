@@ -14,6 +14,9 @@ public class AcpRobotParam {
     private String avatar = "";
     private boolean enabled = true;
     private MemoryConfig memory;
+    private String remotePlatform;
+    public String getRemotePlatform() { return remotePlatform; }
+    public void setRemotePlatform(String remotePlatform) { this.remotePlatform = remotePlatform; }
     private String agentProvider = "KIRO_CLI";
     private String providerVersion;
     private boolean abilityAutoRefresh = true;

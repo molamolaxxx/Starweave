@@ -583,6 +583,23 @@ java -jar cmd-proxy-app/target/cmd-proxy-app-1.0.0-jar-with-dependencies.jar acp
 | 本地 RPC 端口 | `CMD_PROXY_RPC_PORT` | `-Dcmd.proxy.rpcPort` | `10020` |
 | 控制台端口 | `CMD_PROXY_CONFIG_UI_PORT` | `-Dcmd.proxy.configUiPort` | `10528`（仅首次初始化生效，之后由配置文件决定） |
 
+#### HTTP 工作线程数
+
+管理页「HTTP 工作线程数」可调整普通 HTTP 请求的并发线程数，默认 `32`，范围 `1～1024`，保存后需重启服务生效。
+也可在数据目录的 `acpConfig.json` 中设置 `configUi.httpThreadPoolSize`，例如：
+
+```json
+{
+  "configUi": {
+    "enabled": true,
+    "port": 10528,
+    "httpThreadPoolSize": 128
+  }
+}
+```
+
+该配置不改变独立的会话流线程池。
+
 #### 指定远端服务地址
 
 接入 MolaChat 网关时，可指定远端主机（支持 `--remote-host <host>` 与 `--remote-host=<host>` 两种写法）。

@@ -60,6 +60,17 @@
 
 记忆提取子 Client **不加载任何 MCP Server**，因为它只需要分析对话文本并输出结构化 JSON，不需要任何工具调用能力。不加载 MCP 还能显著加快子 Client 的启动速度。
 
+当前记忆提取子 Client 按主会话延迟创建并复用。主 Agent 进入自动休眠或恢复重启前
+的休眠状态时，异步通知记忆模块；提取队列完成已提交的工作后，释放对应记忆子 Client
+的运行时，保留 Memory session ID 和成功提取游标。休眠请求独立于有界提取队列保存，
+队列满时不会丢失。主 Agent 唤醒不会立即启动记忆子 Client，下次实际提取时才恢复。
+支持 `session/load` 的 Provider 加载原 Memory session；不支持时新建 Memory session。
+恢复失败保留原身份和游标，等待后续提取重试，不自动重跑失败任务。
+此行为同时适用于指定模型和指定 Agent 两种执行模式，只作用于该主会话的独立
+记忆运行时。所有状态与错误只写后台日志，不新增前端状态、通知或对话卡片。
+Dream 整理仍按单次任务创建并关闭，不参与此复用生命周期。
+
+
 ```java
 // 在 AcpClientRegistry 中注册一个内部 groupId
 String memoryGroupId = groupId + "__memory_extractor";

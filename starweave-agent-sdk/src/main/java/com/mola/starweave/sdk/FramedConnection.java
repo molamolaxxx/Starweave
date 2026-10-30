@@ -9,7 +9,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Independent bounded queues; resource and observation chunks do not occupy heartbeat/ACP slots. */
-public final class FramedConnection implements Closeable {
+public final class FramedConnection implements AgentConnection {
     private static final int CHUNK_BYTES = 32768;
     private final Socket socket;
     private final BlockingQueue<JsonObject> control = new ArrayBlockingQueue<>(64), data = new ArrayBlockingQueue<>(128), resources = new ArrayBlockingQueue<>(64), sessions = new ArrayBlockingQueue<>(64);

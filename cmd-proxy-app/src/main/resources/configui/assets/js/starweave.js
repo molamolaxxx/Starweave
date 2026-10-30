@@ -216,6 +216,12 @@ try{var results=await Promise.all(members.map(function(member){return postTeamMe
 }finally{delete teamBatchOperations[teamId];renderStarweaveTeams()}
 }
 function starTeamSourceKey(source){return [source.cmdProxyInstanceId||'',source.sourceGroupId||'',source.sourceRobotId||''].join('|')}
+function starTeamNewMemberId(draft){
+var used=(draft.members||[]).map(function(member){return member.teamMemberId}).concat(Object.keys(draft.newIds||{}).map(function(key){return draft.newIds[key]}));
+var base='member-'+starRequestId(),id=base,suffix=1;
+while(used.indexOf(id)>=0)id=base+'-'+suffix++;
+return id
+}
 function switchStarTeamDialogTab(dialogId,tab){var valid=['basic','settings'];if(valid.indexOf(tab)<0)tab='basic';var dialog=document.getElementById(dialogId);if(!dialog)return;dialog.querySelectorAll('[data-star-team-tab]').forEach(function(el){var active=el.getAttribute('data-star-team-tab')===tab;el.classList.toggle('active',active);el.setAttribute('aria-selected',active?'true':'false')});dialog.querySelectorAll('[data-star-team-panel]').forEach(function(el){var active=el.getAttribute('data-star-team-panel')===tab;el.classList.toggle('active',active);el.setAttribute('aria-hidden',active?'false':'true')});var body=dialog.querySelector('.star-team-dialog-content');if(body)body.scrollTop=0}
 function starTeamPickerSourceLabel(source){var label=source&&source.sourceLabel||'';return label.indexOf('本环境')===0?'本环境':label}
 function markStarTeamTabError(dialogId,tab,message){var dialog=document.getElementById(dialogId);if(dialog){var button=dialog.querySelector('[data-star-team-tab="'+tab+'"]');if(button)button.classList.add('has-error')}switchStarTeamDialogTab(dialogId,tab);showSnackbar(message)}
@@ -277,7 +283,7 @@ if(selected.length<1||selected.length>10){markStarTeamTabError('starTeamEditDial
 var members=selected.map(function(key){
 var old=draft.members.filter(function(member){return member.teamMemberId===key})[0],source=draft.sources.filter(function(item){return starTeamSourceKey(item)===key})[0];
 if(!old&&!source)return null;
-if(!old&&!draft.newIds[key])draft.newIds[key]='member-'+starRequestId().slice(0,12);
+if(!old&&!draft.newIds[key])draft.newIds[key]=starTeamNewMemberId(draft);
 return{teamMemberId:old?old.teamMemberId:draft.newIds[key],cmdProxyInstanceId:old?old.cmdProxyInstanceId:source.cmdProxyInstanceId,transportGroup:old?old.transportGroup:source.transportGroup,sourceGroupId:old?old.sourceGroupId:source.sourceGroupId,sourceRobotId:old?old.sourceRobotId:source.sourceRobotId,sourceType:old?old.sourceType:source.sourceType,coordinated:old?!!old.coordinated:!!source.coordinated,remark:draft.remarks[key]||''}
 });
 if(members.some(function(member){return !member||!member.sourceGroupId})){showSnackbar('成员来源信息不完整，请刷新队伍后重试');return}

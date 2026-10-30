@@ -8,6 +8,9 @@ import com.mola.cmd.proxy.app.acp.channel.ChannelConfigFileStore;
 import com.mola.cmd.proxy.app.acp.mcpauth.McpAuthManager;
 import com.mola.starweave.sdk.*;
 import com.mola.starweave.agent.transport.AcpTransport;
+import com.mola.starweave.agent.HostedToolSession;
+import com.mola.starweave.agent.AgentConfig;
+import com.mola.cmd.proxy.app.acp.acpclient.agent.EmbeddedPiAgentProvider;
 import com.sun.net.httpserver.HttpExchange;
 import java.io.*;
 import java.net.*;
@@ -27,15 +30,17 @@ public final class RemoteAcpManager implements AutoCloseable {
     private final BiConsumer<String, String> refresh;
     private final ConcurrentMap<String, Peer> peers = new ConcurrentHashMap<>();
     private final Set<String> registeredNames = ConcurrentHashMap.newKeySet();
-    private final Set<FramedConnection> connections = ConcurrentHashMap.newKeySet();
+    private final Set<AgentConnection> connections = ConcurrentHashMap.newKeySet();
     private final ExecutorService readers = new ThreadPoolExecutor(0, 64, 30, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> { Thread t = new Thread(r, "remote-acp-reader"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
     private final ExecutorService callbacks = new ThreadPoolExecutor(1, 2, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(128), r -> { Thread t = new Thread(r, "remote-acp-lifecycle"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "remote-acp-heartbeat"); t.setDaemon(true); return t; });
     private final ExecutorService resourceWorkers = new ThreadPoolExecutor(1, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64), r -> { Thread t = new Thread(r, "remote-resource-sync"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
+    private final ExecutorService toolWorkers = new ThreadPoolExecutor(0, 8, 30, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> { Thread t = new Thread(r, "browser-host-tool"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
     private final RemoteMcpProxy mcpProxy = new RemoteMcpProxy();
     private final ExecutorService sessionWorkers = new ThreadPoolExecutor(1, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32), r -> { Thread t = new Thread(r, "remote-session-sync"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
     public void handleMcp(com.sun.net.httpserver.HttpExchange exchange) { mcpProxy.handle(exchange); }
     private volatile ServerSocket listener;
+    private RemoteBrowserServer browserServer;
     private final AtomicBoolean closed = new AtomicBoolean();
     public RemoteAcpManager(Path path, BiConsumer<String, String> refresh) throws IOException {
         this.configPath = path; this.refresh = refresh;
@@ -84,8 +89,16 @@ public final class RemoteAcpManager implements AutoCloseable {
             if (Boolean.FALSE.equals(settings.getBoolean("enabled"))) { status = 503; throw new IOException("Remote ACP disabled"); }
             String access = settings.getString("accessToken");
             if (access != null && !access.isEmpty() && !constant(access, String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")).replaceFirst("^Bearer ", ""))) { status = 401; throw new IOException("Access denied"); }
+            if ("transport=websocket".equals(exchange.getRequestURI().getQuery())) {
+                result.put("protocolVersion", Wire.VERSION);
+                result.put("webSocketPort", browserPort(settings));
+                result.put("webSocketPath", RemoteBrowserServer.PATH);
+                result.put("webSocketUrl", settings.getString("browserWebSocketUrl"));
+                result.put("host", settings.getString("publicHost"));
+            } else {
             result.put("protocolVersion", Wire.VERSION); int boundPort = listen(settings); result.put("port", settings.containsKey("publicPort") ? settings.getIntValue("publicPort") : boundPort);
             result.put("host", settings.getString("publicHost")); result.put("tls", listener instanceof javax.net.ssl.SSLServerSocket);
+            }
         } catch (Exception e) { if (status == 200) status = 503; result.put("error", "Remote ACP discovery unavailable"); }
         byte[] body = result.toJSONString().getBytes(StandardCharsets.UTF_8); exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8"); exchange.sendResponseHeaders(status, body.length);
         try (OutputStream out = exchange.getResponseBody()) { out.write(body); }
@@ -120,10 +133,27 @@ public final class RemoteAcpManager implements AutoCloseable {
         byte[] bytes = response.toString().getBytes(StandardCharsets.UTF_8); exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8"); exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = exchange.getResponseBody()) { out.write(bytes); }
     }
+    private synchronized int browserPort(JSONObject settings) throws IOException {
+        if (closed.get()) throw new IOException("Remote ACP stopped");
+        if (browserServer == null) {
+            RemoteBrowserServer created = new RemoteBrowserServer(this, settings.getString("bindHost"), settings.containsKey("browserPort") ? settings.getIntValue("browserPort") : 13531);
+            try { created.start(); browserServer = created; }
+            catch (Exception e) { created.close(); throw new IOException("Browser WebSocket unavailable", e); }
+        }
+        return browserServer.getPort();
+    }
+    void acceptBrowser(AgentConnection link) throws IOException {
+        try { readers.execute(() -> accept(link)); }
+        catch (RejectedExecutionException e) { link.close(); throw new IOException("Remote connections full", e); }
+    }
     private void accept(Socket socket) {
-        Peer peer = null; FramedConnection link = null;
+        try { accept(new FramedConnection(socket)); }
+        catch (IOException e) { try { socket.close(); } catch (IOException ignored) { } }
+    }
+    private void accept(AgentConnection link) {
+        Peer peer = null;
         try {
-            link = new FramedConnection(socket); connections.add(link);
+            connections.add(link);
             JsonObject hello = link.read();
             if (!"register".equals(Wire.str(hello, "type")) || !hello.has("protocolVersion") || hello.get("protocolVersion").getAsInt() != Wire.VERSION) throw new IOException("Unsupported protocol");
             String name = Wire.str(hello, "name"), identity = Wire.str(hello, "identity"), workspace = Wire.str(hello, "workspace");
@@ -134,9 +164,11 @@ public final class RemoteAcpManager implements AutoCloseable {
             String publicBase = remoteSettings == null ? null : remoteSettings.getString("publicMcpBaseUrl");
             if (publicBase == null || publicBase.trim().isEmpty()) publicBase = base.toString();
             Peer registered = new Peer(name, workspace, publicBase.replaceAll("/+$", ""), link);
-            registered.observationSupported = hello.has("observationVersion") && hello.get("observationVersion").getAsInt() == 1;
+            registered.browser = link instanceof RemoteBrowserServer.BrowserConnection || link instanceof ResumableBrowserConnection;
+            if (registered.browser && !"BROWSER".equals(Wire.str(hello, "platform"))) throw new IOException("Browser platform required");
+            registered.observationSupported = !registered.browser && hello.has("observationVersion") && hello.get("observationVersion").getAsInt() == 1;
             registered.observationAllowed = hello.has("observationAllowed") && hello.get("observationAllowed").getAsBoolean();
-            registered.resourceSync = hello.has("resourceSyncVersion") && hello.get("resourceSyncVersion").getAsInt() == 1;
+            registered.resourceSync = !registered.browser && hello.has("resourceSyncVersion") && hello.get("resourceSyncVersion").getAsInt() == 1;
             registered.sessionSync = hello.has("sessionSyncVersion") && hello.get("sessionSyncVersion").getAsInt() == 1;
             registered.managedRoot = Wire.str(hello, "managedRoot");
             if (registered.resourceSync && (registered.managedRoot.isEmpty() || registered.managedRoot.length() > 4096)) throw new IOException("Invalid managed resource root");
@@ -155,7 +187,12 @@ public final class RemoteAcpManager implements AutoCloseable {
                     JSONObject pi = new JSONObject(true); pi.put("stateId", UUID.randomUUID().toString()); pi.put("baseUrl", "https://api.deepseek.com"); pi.put("contextWindow", 1000000); pi.put("maxTokens", 64000); robot.put("embeddedPi", pi);
                     robot.put("abilityAutoRefresh", false); JSONObject memory = new JSONObject(true); memory.put("readEnabled", true); memory.put("writeEnabled", true); memory.put("scope", "robot"); memory.put("baseDir", configPath.toAbsolutePath().getParent().resolve("memory").toString()); robot.put("memory", memory); robots.add(robot);
                 }
-                robot.put("enabled", true); robot.put("workDir", workspace); robot.put("remoteSdkVersion", Wire.str(hello, "sdkVersion")); robot.put("remotePlatform", Wire.str(hello, "platform"));
+                robot.put("remoteHostKind", registered.browser ? "browser" : "jvm");
+                robot.put("enabled", true);
+                if (!registered.browser) robot.put("workDir", workspace);
+                else if (robot.getString("workDir") == null || robot.getString("workDir").startsWith("/browser/"))
+                    robot.put("workDir", Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize().toString());
+                robot.put("remoteSdkVersion", Wire.str(hello, "sdkVersion")); robot.put("remotePlatform", Wire.str(hello, "platform"));
             }, () -> { registeredNames.add(name); replaced.set(peers.put(name, registered)); });
             peer = registered; if (replaced.get() != null) replaced.get().disconnect();
             JsonObject registration = Wire.frame("registered", null);
@@ -173,14 +210,17 @@ public final class RemoteAcpManager implements AutoCloseable {
                 if (!peer.alive()) throw new IOException("Remote ACP lease expired");
                 peer.lastHeartbeat = System.nanoTime();
                 String type = Wire.str(f, "type"), id = Wire.str(f, "runtimeId");
-                if (type.equals("sessions_request") && peer.sessionSync) {
+                if (type.equals("browser_tool") && peer.browser) {
+                    handleBrowserTool(peer, f);
+                }
+                else if (type.equals("sessions_request") && peer.sessionSync) {
                     Peer owner = peer;
                     if (!owner.sessionBusy.compareAndSet(false, true)) throw new IOException("Session request already pending");
                     Runnable exchange = () -> {
                         JsonObject response;
                         try {
                             if (peers.get(owner.name) != owner || !owner.alive()) return;
-                            Path root = RemoteResources.skillRoot(robotFor(owner)).getParent().resolve("sessions");
+                            Path root = RemoteResources.skillRoot(robotFor(owner)).getParent().resolve(owner.browser ? "browser-sessions" : "sessions");
                             java.util.concurrent.locks.ReentrantLock lock = com.mola.cmd.proxy.app.acp.memory.MemoryScopeLockRegistry.lockForStoragePath(root);
                             lock.lock();
                             try {
@@ -256,6 +296,7 @@ public final class RemoteAcpManager implements AutoCloseable {
                     StreamAcpTransport runtime = peer.runtimes.get(id); if (runtime != null) runtime.accept(message);
                 } else if (type.equals("closed")) {
                     StreamAcpTransport runtime = peer.runtimes.remove(id); if (runtime != null) runtime.fail("远程星核运行实例已关闭");
+                    peer.closeTools(id);
                     final String prefix = id + ":"; peer.prompts.removeIf(key -> key.startsWith(prefix));
                 }
             }
@@ -294,10 +335,11 @@ public final class RemoteAcpManager implements AutoCloseable {
             if (!p.alive()) { p.disconnect(); continue; }
             try { sendConfig(p); if (p.needsRefresh) scheduleRefresh(p); }
             catch (Exception e) { p.error = "远程配置同步失败"; }
-            p.runtimes.entrySet().removeIf(e -> !e.getValue().isAlive());
+            p.runtimes.entrySet().removeIf(e -> { if (e.getValue().isAlive()) return false; p.closeTools(e.getKey()); return true; });
         }
     }
-    public AcpTransport open(AcpRobotParam robot) throws IOException {
+    public AcpTransport open(AcpRobotParam robot) throws IOException { return open(robot, Collections.emptyMap()); }
+    public AcpTransport open(AcpRobotParam robot, Map<String, String> environment) throws IOException {
         Peer peer = peers.get(robot.getName()); if (peer == null || !peer.alive()) throw new IOException("远程星核已失效");
         ensureResources(peer);
         String id = UUID.randomUUID().toString();
@@ -306,8 +348,26 @@ public final class RemoteAcpManager implements AutoCloseable {
             if (method.equals("session/prompt") && message.has("id")) peer.prompts.add(id + ":" + message.get("id").toString());
             if (message.has("params")) {
                 JsonObject params = message.getAsJsonObject("params");
-                if (params.has("cwd")) params.addProperty("cwd", peer.workspace);
-                if (params.has("mcpServers")) rewriteMcp(params.getAsJsonArray("mcpServers"), peer, id);
+                if (params.has("cwd")) params.addProperty("cwd", peer.browser ? robot.getWorkDir() : peer.workspace);
+                if (!peer.browser && params.has("mcpServers")) rewriteMcp(params.getAsJsonArray("mcpServers"), peer, id);
+            }
+            if (peer.browser) {
+                if ((method.equals("session/new") || method.equals("session/load") || method.equals("session/resume")) && message.has("params")) {
+                    String role = Wire.str(message.getAsJsonObject("params"), "_starweaveRole");
+                    if (!role.equals("memory")) role = "browser";
+                    JsonObject params = message.getAsJsonObject("params");
+                    params.addProperty("_starweaveRole", role);
+                    String key = UUID.randomUUID().toString();
+                    JsonObject hostConfig = runtimeConfig(robot);
+                    Map<String, String> hostEnv = new HashMap<>(environment);
+                    for (Map.Entry<String, JsonElement> e : hostConfig.getAsJsonObject("environment").entrySet()) hostEnv.putIfAbsent(e.getKey(), e.getValue().getAsString());
+                    EmbeddedPiConfig pi = robot.getEmbeddedPi();
+                    AgentConfig config = new AgentConfig(pi.getBaseUrl(), pi.getApiKey(), robot.getModel(), EmbeddedPiAgentProvider.agentHome(robot), pi.getContextWindow(), pi.getMaxTokens(), hostEnv);
+                    JsonArray servers = params.has("mcpServers") ? params.getAsJsonArray("mcpServers").deepCopy() : new JsonArray();
+                    peer.hostTools.put(key, new BrowserHostTools(id, config, Paths.get(robot.getWorkDir()).toAbsolutePath().normalize(), servers, role.equals("memory")));
+                    params.addProperty("_starweaveToolSession", key);
+                    params.add("mcpServers", new JsonArray());
+                }
             }
             if (peer.resourceSync) rewriteMemoryPaths(message, new RemoteResources(robot).memorySource(), peer.managedRoot);
             return message;
@@ -326,6 +386,41 @@ public final class RemoteAcpManager implements AutoCloseable {
             JsonObject frame = Wire.frame("open", id); frame.add("config", peerConfig(robot, peer)); peer.link.send(frame); opened.get(20, TimeUnit.SECONDS); return transport;
         } catch (Exception e) { peer.runtimes.remove(id); transport.close(); if (e instanceof InterruptedException) Thread.currentThread().interrupt(); throw new IOException("远程星核启动失败", e); }
         finally { peer.opening.remove(id); }
+    }
+    private void handleBrowserTool(Peer peer, JsonObject frame) throws IOException {
+        String runtimeId = Wire.str(frame, "runtimeId"), key = Wire.str(frame, "toolSession"), operation = Wire.str(frame, "operation");
+        BrowserHostTools host = peer.hostTools.get(key);
+        JsonObject response = Wire.frame("browser_tool_result", runtimeId);
+        response.addProperty("requestId", Wire.str(frame, "requestId"));
+        StreamAcpTransport runtime = peer.runtimes.get(runtimeId);
+        if (host == null || !host.runtimeId.equals(runtimeId) || runtime == null || !runtime.isAlive()) {
+            response.addProperty("error", "工具会话不存在或归属不匹配"); peer.link.send(response); return;
+        }
+        if (operation.equals("cancel")) { host.cancel(Wire.str(frame, "callId")); return; }
+        if (operation.equals("close")) { peer.hostTools.remove(key, host); host.close(); response.add("result", new JsonObject()); peer.link.send(response); return; }
+        try { toolWorkers.execute(() -> {
+            try {
+                if (peers.get(peer.name) != peer || !runtime.isAlive()) throw new IOException("运行实例已关闭");
+                HostedToolSession tools = host.prepare();
+                if (operation.equals("prepare")) {
+                    JsonObject description = tools.describe();
+                    description.addProperty("executionNode", "Starweave 中心 / " + peer.name);
+                    description.addProperty("os", System.getProperty("os.name")); description.addProperty("cwd", host.cwd.toString());
+                    description.addProperty("shell", System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win") ? "PowerShell" : "/bin/sh");
+                    response.add("result", description);
+                } else if (operation.equals("read_files")) {
+                    response.add("result", tools.readFiles(frame.getAsJsonArray("paths")));
+                } else if (operation.equals("call")) {
+                    String callId = Wire.str(frame, "callId");
+                    if (callId.isEmpty() || callId.length() > 256) throw new IOException("无效的工具调用 ID");
+                    response.add("result", tools.execute(callId, Wire.str(frame, "name"), frame.getAsJsonObject("arguments"), update -> {
+                        JsonObject event = Wire.frame("browser_tool_update", runtimeId); event.addProperty("requestId", Wire.str(frame, "requestId")); event.add("result", update);
+                        try { peer.link.send(event); } catch (IOException ignored) { }
+                    }));
+                } else throw new IOException("未知的工具操作");
+            } catch (Exception e) { response.addProperty("error", "工具执行失败：" + e.getMessage()); }
+            try { peer.link.send(response); } catch (IOException ignored) { }
+        }); } catch (RejectedExecutionException e) { response.addProperty("error", "工具执行繁忙，请稍后重试"); peer.link.send(response); }
     }
     private AcpRobotParam robotFor(Peer peer) throws IOException {
         JSONObject value = find(readConfig().getJSONArray("robots"), peer.name);
@@ -367,9 +462,11 @@ public final class RemoteAcpManager implements AutoCloseable {
     }
     private void rewriteMcp(JsonArray servers, Peer peer, String runtimeId) {
         String internal = McpAuthManager.getInstance().getBaseUrl();
-        for (JsonElement item : servers) {
-            JsonObject server = item.getAsJsonObject(); String url = Wire.str(server, "url");
-            if (url.isEmpty()) throw new IllegalArgumentException("远程星核不执行中心机器的 stdio MCP，请配置网络 MCP");
+        for (Iterator<JsonElement> iterator = servers.iterator(); iterator.hasNext();) {
+            JsonObject server = iterator.next().getAsJsonObject(); String url = Wire.str(server, "url");
+            if (url.isEmpty()) {
+                throw new IllegalArgumentException("远程星核不执行中心机器的 stdio MCP，请配置网络 MCP");
+            }
             URI uri = URI.create(url); String host = uri.getHost();
             boolean loopback = Arrays.asList("localhost", "127.0.0.1", "::1", "[::1]").contains(host);
             if (loopback && (url.startsWith(internal + "/") || hasAuthContext(server) || "starweave-tasks".equals(Wire.str(server, "name")))) {
@@ -442,9 +539,15 @@ public final class RemoteAcpManager implements AutoCloseable {
             JSONObject updated = find(next, r.getString("name"));
             if (updated == null) { if (online(r.getString("name"))) throw new IllegalArgumentException("生效的远程星核不能删除"); continue; }
             if (!isRemote(updated)) throw new IllegalArgumentException("远程星核不能切换运行引擎");
-            updated.put("remoteIdentityHash", r.getString("remoteIdentityHash")); updated.put("workDir", r.getString("workDir"));
+            updated.put("remoteIdentityHash", r.getString("remoteIdentityHash"));
+            if (!"BROWSER".equals(r.getString("remotePlatform"))) updated.put("workDir", r.getString("workDir"));
+            else {
+                String cwd = updated.getString("workDir");
+                if (cwd == null || !Paths.get(cwd).isAbsolute() || !Files.isDirectory(Paths.get(cwd))) throw new IllegalArgumentException("浏览器星核工作目录必须是 Starweave 执行端的有效绝对目录");
+                updated.put("workDir", Paths.get(cwd).normalize().toString());
+            }
             updated.put("enabled", online(r.getString("name"))); updated.remove("remoteStatus");
-            for (String field : Arrays.asList("remoteSdkVersion", "remotePlatform")) updated.put(field, r.getString(field));
+            for (String field : Arrays.asList("remoteSdkVersion", "remotePlatform", "remoteHostKind")) updated.put(field, r.getString(field));
         }
         if (next != null) for (int i = 0; i < next.size(); i++) {
             JSONObject r = next.getJSONObject(i);
@@ -471,18 +574,34 @@ public final class RemoteAcpManager implements AutoCloseable {
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
         if (instance == this) instance = null;
+        if (browserServer != null) browserServer.close();
         try { if (listener != null) listener.close(); } catch (IOException ignored) { }
-        for (FramedConnection link : connections) link.close(); for (Peer peer : peers.values()) peer.disconnect();
-        mcpProxy.close(); resourceWorkers.shutdownNow(); sessionWorkers.shutdownNow(); timer.shutdownNow(); readers.shutdownNow(); callbacks.shutdownNow();
+        for (AgentConnection link : connections) link.close(); for (Peer peer : peers.values()) peer.disconnect();
+        mcpProxy.close(); resourceWorkers.shutdownNow(); toolWorkers.shutdownNow(); sessionWorkers.shutdownNow(); timer.shutdownNow(); readers.shutdownNow(); callbacks.shutdownNow();
+    }
+    private static final class BrowserHostTools implements AutoCloseable {
+        final String runtimeId; final AgentConfig config; final Path cwd; final JsonArray servers; final boolean memory;
+        HostedToolSession session; boolean closed;
+        BrowserHostTools(String runtimeId, AgentConfig config, Path cwd, JsonArray servers, boolean memory) { this.runtimeId = runtimeId; this.config = config; this.cwd = cwd; this.servers = servers; this.memory = memory; }
+        synchronized HostedToolSession prepare() throws Exception {
+            if (closed) throw new IOException("工具会话已关闭");
+            if (memory) throw new IOException("记忆提取会话不开放工具");
+            if (session == null) session = new HostedToolSession(config, cwd, servers);
+            return session;
+        }
+        synchronized void cancel(String callId) { if (session != null) session.cancel(callId); }
+        public synchronized void close() { closed = true; if (session != null) session.close(); }
     }
     private static final class Peer {
-        final String name, workspace, mcpBase; final FramedConnection link;
+        final ConcurrentMap<String, BrowserHostTools> hostTools = new ConcurrentHashMap<>();
+        void closeTools(String runtimeId) { hostTools.entrySet().removeIf(e -> { if (!e.getValue().runtimeId.equals(runtimeId)) return false; e.getValue().close(); return true; }); }
+        final String name, workspace, mcpBase; final AgentConnection link;
         final ConcurrentMap<String, StreamAcpTransport> runtimes = new ConcurrentHashMap<>();
         final ConcurrentMap<String, CompletableFuture<Void>> opening = new ConcurrentHashMap<>();
         final ConcurrentMap<String, CompletableFuture<String>> uploading = new ConcurrentHashMap<>();
         final ConcurrentMap<String, CompletableFuture<JsonObject>> observations = new ConcurrentHashMap<>();
         final Semaphore observationSlots = new Semaphore(4);
-        volatile boolean observationSupported, observationAllowed;
+        volatile boolean browser, observationSupported, observationAllowed;
         final Set<String> prompts = ConcurrentHashMap.newKeySet(); final AtomicBoolean refreshing = new AtomicBoolean();
         final AtomicBoolean resourceBusy = new AtomicBoolean();
         final AtomicBoolean sessionBusy = new AtomicBoolean();
@@ -491,8 +610,8 @@ public final class RemoteAcpManager implements AutoCloseable {
         volatile int conflicts; volatile long lastResourceSync;
         volatile CompletableFuture<Void> resourceBarrier;
         volatile long retryAfter; volatile long lastHeartbeat = System.nanoTime(); volatile boolean ready, needsRefresh; volatile String version = "", error = "";
-        Peer(String name, String workspace, String base, FramedConnection link) { this.name = name; this.workspace = workspace; this.mcpBase = base; this.link = link; }
-        boolean alive() { return link.isAlive() && System.nanoTime() - lastHeartbeat < TimeUnit.SECONDS.toNanos(30); }
-        void disconnect() { link.close(); for (CompletableFuture<JsonObject> f : observations.values()) f.completeExceptionally(new IOException("远端连接中断")); observations.clear(); if (resourceBarrier != null) resourceBarrier.completeExceptionally(new IOException("Remote ACP disconnected")); for (StreamAcpTransport r : runtimes.values()) r.fail("远程星核连接中断，当前执行已终止"); for (CompletableFuture<Void> f : opening.values()) f.completeExceptionally(new IOException("Remote ACP disconnected")); for (CompletableFuture<String> f : uploading.values()) f.completeExceptionally(new IOException("Remote ACP disconnected")); runtimes.clear(); opening.clear(); uploading.clear(); prompts.clear(); }
+        Peer(String name, String workspace, String base, AgentConnection link) { this.name = name; this.workspace = workspace; this.mcpBase = base; this.link = link; }
+        boolean alive() { return link.isAlive() && (link instanceof ResumableBrowserConnection || System.nanoTime() - lastHeartbeat < TimeUnit.SECONDS.toNanos(30)); }
+        void disconnect() { link.close(); for (BrowserHostTools tools : hostTools.values()) tools.close(); hostTools.clear(); for (CompletableFuture<JsonObject> f : observations.values()) f.completeExceptionally(new IOException("远端连接中断")); observations.clear(); if (resourceBarrier != null) resourceBarrier.completeExceptionally(new IOException("Remote ACP disconnected")); for (StreamAcpTransport r : runtimes.values()) r.fail("远程星核连接中断，当前执行已终止"); for (CompletableFuture<Void> f : opening.values()) f.completeExceptionally(new IOException("Remote ACP disconnected")); for (CompletableFuture<String> f : uploading.values()) f.completeExceptionally(new IOException("Remote ACP disconnected")); runtimes.clear(); opening.clear(); uploading.clear(); prompts.clear(); }
     }
 }

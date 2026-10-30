@@ -1,0 +1,22 @@
+{
+  "name": "starweave-browser-agent",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node test/browser-e2e.mjs",
+    "test:tools": "node test/classified-browser-e2e.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.75.3",
+    "@earendil-works/pi-ai": "0.75.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "fake-indexeddb": "6.2.4",
+    "playwright-core": "1.56.1",
+    "ws": "8.18.3"
+  }
+}

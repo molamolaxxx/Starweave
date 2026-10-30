@@ -479,6 +479,7 @@ return updated;
 
 function render(){
 document.getElementById('cfgPort').value=config.configUi.port||currentPort();
+document.getElementById('cfgHttpThreadPoolSize').value=config.configUi.httpThreadPoolSize==null?32:config.configUi.httpThreadPoolSize;
 document.getElementById('cfgEnabled').checked=config.configUi.enabled!==false;
 document.getElementById('globalProxy').checked=isAllConfiguredProxiesEnabled();
 document.getElementById('robotCount').textContent=config.robots.length;

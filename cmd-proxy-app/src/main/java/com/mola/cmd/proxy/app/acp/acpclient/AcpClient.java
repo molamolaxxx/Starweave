@@ -507,6 +507,7 @@ public class AcpClient extends AbstractAcpClient {
         }
         lifecycleBoundary();
         releaseRuntimeForSleep();
+        requestMemorySleep();
         notifySleeping();
         logger.info("ACP client 已进入睡眠, logicalId={}, sessionId={}", groupId, sessionId);
         return true;
@@ -521,6 +522,7 @@ public class AcpClient extends AbstractAcpClient {
         }
         lifecycleBoundary();
         releaseRuntimeForSleep();
+        requestMemorySleep();
         notifySleeping();
         logger.info("ACP client 已恢复重启前睡眠状态, logicalId={}, sessionId={}",
                 groupId, sessionId);
@@ -624,6 +626,15 @@ public class AcpClient extends AbstractAcpClient {
             throw failure;
         } finally {
             targetRestoreSessionId = null;
+        }
+    }
+
+    private void requestMemorySleep() {
+        if (memoryManager == null || sessionId == null) return;
+        try {
+            memoryManager.sleepSession(sessionId);
+        } catch (RuntimeException failure) {
+            logger.warn("提交后台记忆休眠失败, sessionId={}", sessionId, failure);
         }
     }
 
@@ -757,6 +768,9 @@ public class AcpClient extends AbstractAcpClient {
                     loadSession(latestSessionId);
                     return;
                 } catch (IOException e) {
+                    if (agentProvider instanceof com.mola.cmd.proxy.app.acp.acpclient.agent.RemoteStarcoreAgentProvider) {
+                        throw new IOException("远程原会话恢复失败，已保留会话，请重试恢复或手动新建", e);
+                    }
                     if (isActiveSessionConflict(e)) {
                         logger.warn("最近 session 正被其他进程使用；不终止占用进程，安全回退到 session/new, sessionId={}",
                                 latestSessionId);

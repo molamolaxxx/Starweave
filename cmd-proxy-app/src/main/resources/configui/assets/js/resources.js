@@ -48,12 +48,12 @@ var robot=config.robots[index];if(!robot)return;
 if(resourceDream.timer)clearTimeout(resourceDream.timer);
 resourceDream={robot:kind==='memory'?(robot.name||''): '',available:false,running:false,pending:kind==='memory',pendingText:'正在检查…',timer:null};
 resourceState={robotIndex:index,kind:kind,selectedId:'',nodes:[]};
-var conflictButton=document.getElementById('resourceConflictButton');if(conflictButton)conflictButton.style.display=robot.agentProvider==='REMOTE_STARCORE_ACP'&&(kind==='skill'||kind==='memory')?'inline-flex':'none';
+var conflictButton=document.getElementById('resourceConflictButton');if(conflictButton)conflictButton.style.display=robot.agentProvider==='REMOTE_STARCORE_ACP'&&robot.remotePlatform!=='BROWSER'&&(kind==='skill'||kind==='memory')?'inline-flex':'none';
 var meta=resourceMeta(kind);
 document.getElementById('resourceDialogTitle').textContent=meta.title;
 document.getElementById('resourceDialogIcon').textContent=meta.icon;
 document.getElementById('resourceTreeTitle').textContent=meta.tree;
-document.getElementById('resourceDialogSubtitle').textContent=(robot.name||'未命名')+' · '+providerDisplayName(robot.agentProvider||'KIRO_CLI')+(robot.agentProvider==='REMOTE_STARCORE_ACP'&&(kind==='skill'||kind==='memory')?' · 查看 Starweave 持久副本；在线容器自动双向同步':'');
+document.getElementById('resourceDialogSubtitle').textContent=(robot.name||'未命名')+' · '+providerDisplayName(robot.agentProvider||'KIRO_CLI')+(robot.agentProvider==='REMOTE_STARCORE_ACP'&&robot.remotePlatform!=='BROWSER'&&(kind==='skill'||kind==='memory')?' · 查看 Starweave 持久副本；在线容器自动双向同步':'');
 document.getElementById('resourceFileName').textContent='请选择文件';
 document.getElementById('resourceFileMeta').textContent='';
 updateAgentMemoryDreamButton();
@@ -222,7 +222,7 @@ function openMemoryDetail(button){var fileName=button.getAttribute('data-memory-
 
 var remoteResourceConflictSelection=null;
 async function showRemoteResourceConflicts(){
-var robot=config.robots[resourceState.robotIndex];if(!robot||robot.agentProvider!=='REMOTE_STARCORE_ACP')return;
+var robot=config.robots[resourceState.robotIndex];if(!robot||robot.agentProvider!=='REMOTE_STARCORE_ACP'||robot.remotePlatform==='BROWSER')return;
 var name=robot.name;remoteResourceConflictSelection=null;
 try{var response=await api('/api/remote-acp/resource-conflicts?robot='+encodeURIComponent(name)),data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'读取失败');
 if(!config.robots[resourceState.robotIndex]||config.robots[resourceState.robotIndex].name!==name)return;

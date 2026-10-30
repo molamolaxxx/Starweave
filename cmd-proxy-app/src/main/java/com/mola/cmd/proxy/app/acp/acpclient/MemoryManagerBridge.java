@@ -24,6 +24,10 @@ public interface MemoryManagerBridge {
     void submitExtract(String sourceSessionId, String workspacePath,
                        List<ContextMessage> history);
 
+    /** Request background runtime sleep after admitted extraction work, retaining progress. */
+    default void sleepSession(String sourceSessionId) {
+    }
+
     /**
      * 登记恢复会话已经加载的历史基线。基线之前的消息不应再次参与增量提取。
      */

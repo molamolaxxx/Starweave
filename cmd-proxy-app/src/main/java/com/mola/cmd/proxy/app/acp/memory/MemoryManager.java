@@ -81,6 +81,12 @@ public class MemoryManager implements MemoryManagerBridge {
     }
 
     @Override
+    public void sleepSession(String sourceSessionId) {
+        // Cleanup remains necessary even if writes were disabled after client creation.
+        if (extractor != null) extractor.sleepSession(sourceSessionId);
+    }
+
+    @Override
     public void resumeSession(String sourceSessionId, int historySize) {
         if (!config.isWriteEnabled() || extractor == null) return;
         extractor.resumeSession(sourceSessionId, historySize);

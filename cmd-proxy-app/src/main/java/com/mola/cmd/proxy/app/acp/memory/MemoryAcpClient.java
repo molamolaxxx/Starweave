@@ -4,11 +4,13 @@ import com.google.gson.*;
 import com.mola.cmd.proxy.app.acp.AcpRobotParam;
 import com.mola.cmd.proxy.app.acp.acpclient.AbstractAcpClient;
 import com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProviderRouter;
+import com.mola.cmd.proxy.app.acp.acpclient.agent.AgentProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 记忆提取专用子 Client，继承 {@link AbstractAcpClient}。
@@ -27,6 +29,7 @@ public class MemoryAcpClient extends AbstractAcpClient
     private static final Logger logger = LoggerFactory.getLogger(MemoryAcpClient.class);
 
     private final int timeoutSeconds;
+    private final AtomicBoolean resetAfterRestoreTimeout = new AtomicBoolean();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "memory-acp-worker");
         t.setDaemon(true);
@@ -35,8 +38,13 @@ public class MemoryAcpClient extends AbstractAcpClient
 
     public MemoryAcpClient(String workspacePath, String groupId, int timeoutSeconds,
                            AcpRobotParam robotParam, String memoryModel) {
-        super(AgentProviderRouter.getInstance().resolve(robotParam.getAgentProvider()),
-                workspacePath, groupId, buildEffectiveParam(robotParam, memoryModel));
+        this(AgentProviderRouter.getInstance().resolve(robotParam.getAgentProvider()),
+                workspacePath, groupId, timeoutSeconds, robotParam, memoryModel);
+    }
+
+    MemoryAcpClient(AgentProvider provider, String workspacePath, String groupId,
+                    int timeoutSeconds, AcpRobotParam robotParam, String memoryModel) {
+        super(provider, workspacePath, groupId, buildEffectiveParam(robotParam, memoryModel));
         this.timeoutSeconds = timeoutSeconds;
         String effectiveModel = (memoryModel != null && !memoryModel.trim().isEmpty())
                 ? memoryModel.trim() : (robotParam.getModel() != null ? robotParam.getModel() : "default");
@@ -71,7 +79,14 @@ public class MemoryAcpClient extends AbstractAcpClient
     protected void createSession() throws IOException {
         JsonObject params = new JsonObject();
         params.addProperty("cwd", workspacePath);
+        if ("REMOTE_STARCORE_ACP".equals(robotParamRef.getAgentProvider())) params.addProperty("_starweaveRole", "memory");
         params.add("mcpServers", new JsonArray());  // 不加载任何 MCP
+        if (sessionId != null && agentProvider.supportsSessionLoad()) {
+            params.addProperty("sessionId", sessionId);
+            sendRequest("session/load", params);
+            logger.info("Memory session 恢复成功: {}", sessionId);
+            return;
+        }
         JsonObject response = sendRequest("session/new", params);
         JsonObject result = response.getAsJsonObject("result");
         setSessionId(result.get("sessionId").getAsString());
@@ -86,12 +101,37 @@ public class MemoryAcpClient extends AbstractAcpClient
      * @throws IOException 通信失败或超时
      */
     public String sendPromptSync(String promptText) throws IOException {
-        Future<String> future = executor.submit(() -> doSendPromptSync(promptText, "Memory ACP"));
+        final boolean restoring = getState() == State.SLEEP || resetAfterRestoreTimeout.get();
+        Future<String> future = executor.submit(() -> {
+            if (getState() == State.CLOSING || getState() == State.CLOSED) {
+                throw new IOException("Memory client 已关闭");
+            }
+            // The previous timed-out worker may have finished startup after cancellation.
+            // Reset on this same worker before retrying the retained session identity.
+            if (resetAfterRestoreTimeout.getAndSet(false)) {
+                releaseRuntimeForSleep();
+                state.set(State.SLEEP);
+            }
+            if (getState() == State.SLEEP) {
+                try {
+                    wakeRuntimeSession();
+                } catch (IOException | RuntimeException failure) {
+                    throw new SessionRestoreException(failure);
+                }
+            }
+            return doSendPromptSync(promptText, "Memory ACP");
+        });
         try {
             return future.get(timeoutSeconds, TimeUnit.SECONDS);
         } catch (TimeoutException e) {
             future.cancel(true);
-            throw new IOException("记忆提取超时（" + timeoutSeconds + "s）", e);
+            IOException timeout = new IOException("记忆提取超时（" + timeoutSeconds + "s）", e);
+            if (restoring) {
+                resetAfterRestoreTimeout.set(true);
+                releaseRuntimeForSleep();
+                throw new SessionRestoreException(timeout);
+            }
+            throw timeout;
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof IOException) throw (IOException) cause;
@@ -99,6 +139,21 @@ public class MemoryAcpClient extends AbstractAcpClient
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("记忆提取被中断", e);
+        }
+    }
+
+    /** Called only by the extraction queue after outstanding prompts have completed. */
+    @Override
+    public void sleep() {
+        if (state.compareAndSet(State.READY, State.SLEEP)) {
+            releaseRuntimeForSleep();
+            logger.info("后台 Memory session 已休眠: {}", sessionId);
+        }
+    }
+
+    static final class SessionRestoreException extends IOException {
+        SessionRestoreException(Throwable cause) {
+            super("记忆原会话恢复失败，保留会话等待后续重试", cause);
         }
     }
 

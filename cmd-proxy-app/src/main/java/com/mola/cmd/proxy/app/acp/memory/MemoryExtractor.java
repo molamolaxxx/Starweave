@@ -53,8 +53,11 @@ public class MemoryExtractor {
     private final ConcurrentMap<String, Integer> extractedSizes =
             new ConcurrentHashMap<>();
 
+    /** Lifecycle requests live outside the lossy bounded extraction queue. */
+    private final java.util.Set<String> pendingSleeps = ConcurrentHashMap.newKeySet();
+
     /** 单线程提取队列，串行执行所有提取任务 */
-    private final ExecutorService extractQueue = new ThreadPoolExecutor(
+    private final ThreadPoolExecutor extractQueue = new ThreadPoolExecutor(
             1, 1, 0L, TimeUnit.MILLISECONDS,
             new LinkedBlockingQueue<>(16),  // 有界队列，防止堆积过多
             r -> {
@@ -63,7 +66,14 @@ public class MemoryExtractor {
                 return t;
             },
             new ThreadPoolExecutor.DiscardOldestPolicy()  // 队列满时丢弃最旧的（增量提取可丢，全量兜底）
-    );
+    ) {
+        @Override
+        protected void afterExecute(Runnable task, Throwable failure) {
+            super.afterExecute(task, failure);
+            // Finish admitted extraction work before releasing any requested runtime.
+            if (getQueue().isEmpty()) drainSleepRequests();
+        }
+    };
 
     public MemoryExtractor(MemoryConfig config, MemoryFileStore fileStore, AcpRobotParam robotParam) {
         this(config, fileStore, robotParam, null, new MemoryScopeLockRegistry());
@@ -115,6 +125,30 @@ public class MemoryExtractor {
                     sessionKey, workspacePath, snapshot));
         } catch (RejectedExecutionException e) {
             logger.warn("提取队列已满或已关闭，跳过本次增量提取");
+        }
+    }
+
+    public void sleepSession(String sourceSessionId) {
+        String sessionKey = requireSessionKey(sourceSessionId);
+        if (extractQueue.isShutdown()) return;
+        pendingSleeps.add(sessionKey);
+        // Wake an idle worker without evicting extraction work if the queue is full.
+        extractQueue.prestartCoreThread();
+        extractQueue.getQueue().offer(() -> { });
+    }
+
+    private void drainSleepRequests() {
+        for (String sessionKey : pendingSleeps) {
+            if (!pendingSleeps.remove(sessionKey)) continue;
+            MemoryExtractionClient client = sessionClients.get(sessionKey);
+            if (client == null) continue;
+            try {
+                client.sleep();
+            } catch (Exception failure) {
+                logger.warn("后台 Memory session 休眠失败, sourceSessionId={}",
+                        sessionKey, failure);
+                closeSessionClient(sessionKey);
+            }
         }
     }
 
@@ -230,8 +264,12 @@ public class MemoryExtractor {
         if (success && !tail.isEmpty()) {
             extractedSizes.put(sourceSessionId, history.size());
         }
-        closeSessionClient(sourceSessionId);
-        extractedSizes.remove(sourceSessionId);
+        // A failed restore retained the sleeping client for retry. Preserve its cursor
+        // even for a final extraction; ordinary failures already discarded the client.
+        if (success || !sessionClients.containsKey(sourceSessionId)) {
+            closeSessionClient(sourceSessionId);
+            extractedSizes.remove(sourceSessionId);
+        }
         return success;
     }
 
@@ -300,7 +338,10 @@ public class MemoryExtractor {
             logger.info("记忆提取完成, 操作数={}", actions.size());
             return true;
         } catch (Exception e) {
-            closeSessionClient(sourceSessionId);
+            // A failed session/load must retain its identity for the next attempt.
+            if (!(e instanceof MemoryAcpClient.SessionRestoreException)) {
+                closeSessionClient(sourceSessionId);
+            }
             logger.error("记忆提取失败, workspacePath={}", workspacePath, e);
             return false;
         }
@@ -362,6 +403,8 @@ public class MemoryExtractor {
 
     interface MemoryExtractionClient extends AutoCloseable {
         String sendPromptSync(String promptText) throws IOException;
+
+        void sleep() throws IOException;
 
         @Override
         void close() throws IOException;

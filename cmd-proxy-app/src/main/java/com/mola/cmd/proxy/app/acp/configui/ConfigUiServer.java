@@ -236,8 +236,13 @@ public class ConfigUiServer {
     }
 
     public void start() throws IOException {
+        Path configPath = Paths.get(CONFIG_PATH);
+        JSONObject config = Files.isRegularFile(configPath)
+                ? JSON.parseObject(new String(Files.readAllBytes(configPath), StandardCharsets.UTF_8)) : null;
+        int httpThreadPoolSize = httpThreadPoolSize(config);
         server = HttpServer.create(new InetSocketAddress(port), 0);
-        executor = Executors.newFixedThreadPool(32);
+        executor = Executors.newFixedThreadPool(httpThreadPoolSize);
+        logger.info("ConfigUI HTTP 线程池大小: {}", httpThreadPoolSize);
         starweaveStreamExecutor = Executors.newFixedThreadPool(16, runnable -> {
             Thread thread = new Thread(runnable, "starweave-session-stream");
             thread.setDaemon(true);
@@ -822,6 +827,16 @@ public class ConfigUiServer {
         }
     }
 
+    static int httpThreadPoolSize(JSONObject config) {
+        JSONObject ui = config == null ? null : config.getJSONObject("configUi");
+        Object value = ui == null ? null : ui.get("httpThreadPoolSize");
+        if (value == null) return 32;
+        if (!(value instanceof Integer) || (Integer) value < 1 || (Integer) value > 1024) {
+            throw new IllegalArgumentException("configUi.httpThreadPoolSize 必须是 1～1024 的整数");
+        }
+        return (Integer) value;
+    }
+
     private void handleGetConfig(HttpExchange exchange) throws IOException {
         Path path = Paths.get(CONFIG_PATH);
         if (!Files.exists(path)) {
@@ -848,6 +863,14 @@ public class ConfigUiServer {
         }
         // 格式化写入
         JSONObject json = JSON.parseObject(body);
+        try {
+            httpThreadPoolSize(json);
+        } catch (IllegalArgumentException e) {
+            JSONObject error = new JSONObject(true);
+            error.put("error", e.getMessage());
+            sendResponse(exchange, 400, "application/json", error.toJSONString());
+            return;
+        }
         if (json.getJSONArray("robots") != null) {
             java.util.Set<String> robotNames = new java.util.HashSet<>();
             for (int i = 0; i < json.getJSONArray("robots").size(); i++) {
@@ -2537,7 +2560,7 @@ public class ConfigUiServer {
         }
         try {
             AcpRobotParam robot = findConfiguredRobot(param(exchange, "robot"));
-            if ("REMOTE_STARCORE_ACP".equals(robot.getAgentProvider())) throw new IllegalArgumentException("远程资源迁移暂不支持，请在业务应用机器部署 Skills；记忆由 Starweave 管理");
+            if ("REMOTE_STARCORE_ACP".equals(robot.getAgentProvider()) && !"BROWSER".equals(robot.getRemotePlatform())) throw new IllegalArgumentException("远程资源迁移暂不支持，请在业务应用机器部署 Skills；记忆由 Starweave 管理");
             AgentResourceMigration migration = new AgentResourceMigration();
             if (importing) {
                 if (!"true".equals(param(exchange, "overwrite"))) {

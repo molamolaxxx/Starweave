@@ -36,7 +36,7 @@ const server = http.createServer((req, res) => {
           if (url === '/api/remote-acp/status') return { ok: true, json: async () => ({ robots: [{ ...config.robots[0], enabled: false, remoteStatus: { online: false, ready: false } }] }) };
           return { ok: true, json: async () => ({ success: true, models: [{ id: 'model-one', name: 'model-one' }] }) };
         };
-        applyRobotConfig = async () => ({}); renderRobots(); switchPage('acp');
+        applyRobotConfig = async () => ({}); document.getElementById('cfgHttpThreadPoolSize').value = 32; renderRobots(); switchPage('acp');
       });
       const copyButton = page.locator('.robot-actions button').filter({ has: page.locator('.material-icons', { hasText: /^content_copy$/ }) });
       const deleteButton = page.locator('.robot-actions button').filter({ has: page.locator('.material-icons', { hasText: /^delete$/ }) });
@@ -73,6 +73,17 @@ const server = http.createServer((req, res) => {
       await page.locator('#robotDialogSubmit').click();
       await page.waitForFunction(() => saved.length === 1);
       assert.equal(await page.evaluate(() => saved[0].robots[0].model), 'new-model');
+      await page.evaluate(() => { config.robots[0].remotePlatform = 'BROWSER'; openRobotDialog(0); });
+      assert.equal(await page.locator('#dWorkDir').getAttribute('readonly'), null);
+      assert.equal(await page.locator('#dProxyEnabled').isDisabled(), false);
+      await page.locator('#dWorkDir').fill('/center/browser-workspace');
+      await page.locator('#robotDialogSubmit').click();
+      await page.waitForFunction(() => saved.length === 2);
+      assert.equal(await page.evaluate(() => saved[1].robots[0].workDir), '/center/browser-workspace');
+      await page.evaluate(async () => { await openAgentResource(0, 'skill'); });
+      assert.ok(!(await page.locator('#resourceDialogSubtitle').innerText()).includes('双向同步'));
+      assert.equal(await page.locator('#resourceConflictButton').isVisible(), false);
+      await page.evaluate(() => closeAgentResource());
       await page.evaluate(async () => { await toggleRobot(0, false); await deleteRobot(0); });
       assert.equal(await page.evaluate(() => config.robots.length), 1);
       assert.equal(await page.evaluate(() => config.robots[0].enabled), true);

@@ -14,7 +14,7 @@ public final class StreamAcpTransport implements AcpTransport {
     public void setFileStager(FileStager value) { stager = value; }
     public java.util.Map<String, String> stageFiles(java.util.Collection<String> paths) throws IOException { return stager == null ? AcpTransport.super.stageFiles(paths) : stager.stage(paths); }
     private final String id;
-    private final FramedConnection connection;
+    private final AgentConnection connection;
     private final java.util.function.UnaryOperator<JsonObject> outgoing;
     private final BlockingQueue<byte[]> incoming = new ArrayBlockingQueue<>(256);
     private final CountDownLatch exited = new CountDownLatch(1);
@@ -44,16 +44,19 @@ public final class StreamAcpTransport implements AcpTransport {
             if (value == '\n') {
                 if (line.size() == 0) return;
                 JsonObject f = Wire.frame("acp", id);
-                try { f.add("message", outgoing.apply(JsonParser.parseString(new String(line.toByteArray(), StandardCharsets.UTF_8)).getAsJsonObject())); }
-                catch (RuntimeException e) { throw new IOException("Invalid ACP message", e); }
-                line.reset(); connection.send(f);
+                byte[] payload = line.toByteArray(); line.reset();
+                try { f.add("message", outgoing.apply(JsonParser.parseString(new String(payload, StandardCharsets.UTF_8)).getAsJsonObject())); }
+                catch (RuntimeException e) { throw new IOException("Invalid ACP message: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()), e); }
+                connection.send(f);
             } else { if (line.size() >= Wire.MAX_FRAME - 1024) throw new IOException("ACP message exceeds limit"); line.write(value); }
         }
         public synchronized void write(byte[] b, int off, int len) throws IOException { for (int i = off; i < off + len; i++) write(b[i]); }
         public void close() { StreamAcpTransport.this.close(); }
     };
-    public StreamAcpTransport(String id, FramedConnection connection) { this(id, connection, message -> message); }
-    public StreamAcpTransport(String id, FramedConnection connection, java.util.function.UnaryOperator<JsonObject> outgoing) { this.id = id; this.connection = connection; this.outgoing = outgoing; }
+    public StreamAcpTransport(String id, FramedConnection connection) { this(id, (AgentConnection) connection, message -> message); }
+    public StreamAcpTransport(String id, AgentConnection connection) { this(id, connection, message -> message); }
+    public StreamAcpTransport(String id, FramedConnection connection, java.util.function.UnaryOperator<JsonObject> outgoing) { this(id, (AgentConnection) connection, outgoing); }
+    public StreamAcpTransport(String id, AgentConnection connection, java.util.function.UnaryOperator<JsonObject> outgoing) { this.id = id; this.connection = connection; this.outgoing = outgoing; }
     public void accept(JsonObject message) throws IOException {
         if (closed.get()) return;
         byte[] bytes = (message.toString() + "\n").getBytes(StandardCharsets.UTF_8);

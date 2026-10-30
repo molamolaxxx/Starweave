@@ -281,7 +281,7 @@ final class AgentResourceMigration {
     }
 
     private Path resourceBase(AcpRobotParam robot, String kind) {
-        if (kind.equals("skill") && "REMOTE_STARCORE_ACP".equals(robot.getAgentProvider())) return com.mola.cmd.proxy.app.acp.remote.RemoteResources.skillRoot(robot);
+        if (kind.equals("skill") && "REMOTE_STARCORE_ACP".equals(robot.getAgentProvider()) && !"BROWSER".equals(robot.getRemotePlatform())) return com.mola.cmd.proxy.app.acp.remote.RemoteResources.skillRoot(robot);
         return workspace(robot);
     }
     private Path memoryRoot(AcpRobotParam robot) { return browser.roots(robot, "memory").get(0).path; }

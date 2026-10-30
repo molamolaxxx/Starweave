@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Starweave 浏览器星核</title><link rel="stylesheet" href="options.css"></head>
+<body><main><h1>浏览器星核</h1><p class="intro">连接 Starweave，让智能体使用当前浏览器。</p>
+<div id="status" role="status">读取状态…</div><p id="error" class="error"></p><p id="backup" class="error"></p>
+<form id="settings"><label>Starweave 地址<input id="url" type="url" placeholder="http://服务器地址:10528" required></label>
+<label>智能体名称<input id="name" placeholder="browser-mola-office" maxlength="80" required></label>
+<details><summary>高级设置</summary><label>接入令牌<input id="accessToken" type="password" autocomplete="off" placeholder="仅在中心启用时填写"></label></details>
+<button id="save" type="submit">保存并连接</button></form>
+<div class="actions"><button id="open" type="button">打开 Starweave</button><button id="stop" type="button">停止当前执行</button></div>
+<p class="hint">模型、Skills 和记忆在 Starweave 中管理。浏览器工具与 JS 执行默认开放。</p></main><script type="module" src="options.js"></script></body></html>

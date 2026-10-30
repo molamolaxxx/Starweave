@@ -213,6 +213,100 @@ public class MemoryExtractorSessionReuseTest {
         extractor.shutdown();
     }
 
+    @Test
+    public void sleepRetainsClientAndCursorAndDoesNotAffectOtherSessions() throws Exception {
+        RecordingFactory factory = new RecordingFactory(false);
+        MemoryExtractor extractor = extractor(factory);
+        String workspace = temporaryFolder.newFolder("sleep").getAbsolutePath();
+        try {
+            CountDownLatch ready = new CountDownLatch(2);
+            extractor.submitRecoverActive("main", workspace, messages("old-user", "old-agent"),
+                    ready::countDown, error -> ready.countDown());
+            extractor.submitRecoverActive("other", workspace, messages("other-user", "other-agent"),
+                    ready::countDown, error -> ready.countDown());
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            RecordingClient client = factory.clients.get(0);
+            extractor.sleepSession("main");
+            assertTrue(client.slept.await(5, TimeUnit.SECONDS));
+            assertEquals(0, client.closed.get());
+            assertEquals(0, factory.clients.get(1).sleeps.get());
+
+            CountDownLatch done = new CountDownLatch(1);
+            extractor.submitExtractFull("main", workspace,
+                    messages("old-user", "old-agent", "new-user", "new-agent"),
+                    done::countDown, error -> done.countDown());
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertEquals(2, factory.created.get());
+            assertEquals(2, client.prompts.size());
+            assertFalse(client.prompts.get(1).contains("old-user"));
+            assertTrue(client.prompts.get(1).contains("new-user"));
+        } finally {
+            extractor.shutdown();
+        }
+    }
+
+    @Test
+    public void sleepSurvivesFullQueueAndWaitsForRunningExtraction() throws Exception {
+        RecordingFactory factory = new RecordingFactory(false);
+        factory.blockFirst = true;
+        MemoryExtractor extractor = extractor(factory);
+        String workspace = temporaryFolder.newFolder("busy-sleep").getAbsolutePath();
+        try {
+            extractor.submitExtract("main", workspace, messages("busy-user", "busy-agent"));
+            assertTrue(factory.promptEntered.await(5, TimeUnit.SECONDS));
+            RecordingClient client = factory.clients.get(0);
+            // Fill all 16 queue slots while a model request is in progress.
+            for (int i = 0; i < 16; i++) extractor.resumeSession("queued-" + i, 0);
+            extractor.sleepSession("main");
+            extractor.sleepSession("main");
+            assertEquals(0, client.sleeps.get());
+            assertEquals(0, client.closed.get());
+            factory.releasePrompt.countDown();
+            assertTrue(client.slept.await(5, TimeUnit.SECONDS));
+            assertEquals(1, client.sleeps.get());
+            assertEquals(1, client.prompts.size());
+            assertEquals(0, client.closed.get());
+        } finally {
+            factory.releasePrompt.countDown();
+            extractor.shutdown();
+        }
+    }
+
+    @Test
+    public void failedRestoreRetainsClientAndDoesNotAdvanceCursor() throws Exception {
+        RecordingFactory factory = new RecordingFactory(false);
+        MemoryExtractor extractor = extractor(factory);
+        String workspace = temporaryFolder.newFolder("restore-failure").getAbsolutePath();
+        List<ContextMessage> old = messages("before-sleep-user", "before-sleep-agent");
+        List<ContextMessage> extended = messages("before-sleep-user", "before-sleep-agent",
+                "retry-tail-user", "retry-tail-agent");
+        try {
+            CountDownLatch ready = new CountDownLatch(1);
+            extractor.submitRecoverActive("main", workspace, old,
+                    ready::countDown, error -> ready.countDown());
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            RecordingClient client = factory.clients.get(0);
+            extractor.sleepSession("main");
+            assertTrue(client.slept.await(5, TimeUnit.SECONDS));
+            client.failRestoreNext = true;
+            CountDownLatch failed = new CountDownLatch(1);
+            extractor.submitExtractFull("main", workspace, extended,
+                    () -> { }, error -> failed.countDown());
+            assertTrue(failed.await(5, TimeUnit.SECONDS));
+            assertEquals(0, client.closed.get());
+            CountDownLatch completed = new CountDownLatch(1);
+            extractor.submitExtractFull("main", workspace, extended,
+                    completed::countDown, error -> completed.countDown());
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertEquals(1, factory.created.get());
+            assertEquals(3, client.prompts.size());
+            assertTrue(client.prompts.get(2).contains("retry-tail-user"));
+            assertFalse(client.prompts.get(2).contains("before-sleep-user"));
+        } finally {
+            extractor.shutdown();
+        }
+    }
+
     private MemoryExtractor extractor(RecordingFactory factory) throws Exception {
         MemoryConfig config = new MemoryConfig();
         config.setBaseDir(temporaryFolder.newFolder("memory").getAbsolutePath());
@@ -239,6 +333,9 @@ public class MemoryExtractorSessionReuseTest {
     private static final class RecordingFactory
             implements MemoryExtractor.MemoryClientFactory {
         private final boolean failFirstClient;
+        private boolean blockFirst;
+        private final CountDownLatch promptEntered = new CountDownLatch(1);
+        private final CountDownLatch releasePrompt = new CountDownLatch(1);
         private final AtomicInteger created = new AtomicInteger();
         private final List<RecordingClient> clients = new ArrayList<>();
         private final AtomicReference<String> workspacePath = new AtomicReference<>();
@@ -256,6 +353,10 @@ public class MemoryExtractorSessionReuseTest {
             this.robotParam.set(robotParam);
             int index = created.getAndIncrement();
             RecordingClient client = new RecordingClient(failFirstClient && index == 0);
+            if (blockFirst && index == 0) {
+                client.promptEntered = promptEntered;
+                client.releasePrompt = releasePrompt;
+            }
             clients.add(client);
             return client;
         }
@@ -264,8 +365,13 @@ public class MemoryExtractorSessionReuseTest {
     private static final class RecordingClient
             implements MemoryExtractor.MemoryExtractionClient {
         private final boolean fail;
+        private boolean failRestoreNext;
         private final List<String> prompts = new ArrayList<>();
         private final AtomicInteger closed = new AtomicInteger();
+        private final AtomicInteger sleeps = new AtomicInteger();
+        private final CountDownLatch slept = new CountDownLatch(1);
+        private CountDownLatch promptEntered;
+        private CountDownLatch releasePrompt;
 
         private RecordingClient(boolean fail) {
             this.fail = fail;
@@ -274,8 +380,27 @@ public class MemoryExtractorSessionReuseTest {
         @Override
         public String sendPromptSync(String promptText) throws IOException {
             prompts.add(promptText);
+            if (failRestoreNext) {
+                failRestoreNext = false;
+                throw new MemoryAcpClient.SessionRestoreException(new IOException("planned load failure"));
+            }
+            if (promptEntered != null) {
+                promptEntered.countDown();
+                try {
+                    if (!releasePrompt.await(5, TimeUnit.SECONDS)) throw new IOException("blocked prompt timeout");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(e);
+                }
+            }
             if (fail) throw new IOException("simulated memory client failure");
             return "[]";
+        }
+
+        @Override
+        public void sleep() {
+            sleeps.incrementAndGet();
+            slept.countDown();
         }
 
         @Override

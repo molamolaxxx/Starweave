@@ -65,8 +65,14 @@ var relationsTab='<section class="robot-tab-panel" data-robot-panel="relations" 
 '<div class="section-title">通讯录</div><div id="dContactList"></div><button class="btn btn-secondary btn-sm" onclick="addContact()"><span class="material-icons">add</span>添加联系人</button></section>';
 document.getElementById('dlgBody').innerHTML=basicTab+agentTab+featuresTab+memoryTab+relationsTab;
 if(r.agentProvider==='REMOTE_STARCORE_ACP'){
-['dName','dWorkDir'].forEach(function(id){document.getElementById(id).readOnly=true});document.getElementById('dProvider').disabled=true;
-var picker=document.getElementById('dWorkDir').closest('.field-row').querySelector('button');if(picker)picker.disabled=true;
+document.getElementById('dName').readOnly=true;document.getElementById('dWorkDir').readOnly=r.remotePlatform!=='BROWSER';document.getElementById('dProvider').disabled=true;
+var picker=document.getElementById('dWorkDir').closest('.field-row').querySelector('button');if(picker)picker.disabled=r.remotePlatform!=='BROWSER';
+if(r.remotePlatform==='BROWSER'){
+document.getElementById('dProvider').options[0].textContent='浏览器引擎 · 星核';
+document.getElementById('dProxyEnabled').title='用于 Starweave 宿主工具和 MCP；模型和网页使用浏览器自身网络';
+var observationToggle=document.getElementById('dObservation');observationToggle.checked=false;observationToggle.disabled=true;observationToggle.title='浏览器首版不支持 Node 观测脚本';
+}
+
 }
 renderTeamSharedOwners();renderSubAgents();renderContacts();
 clearRobotValidation();
@@ -384,7 +390,9 @@ await reloadService((enabled?'已开启 ':'已关闭 ')+affected+' 个智能体�
 }
 
 async function saveConfig(silent){
-config.configUi={enabled:document.getElementById('cfgEnabled').checked,port:parseInt(document.getElementById('cfgPort').value)||currentPort()};
+var httpThreadPoolSize=Number(document.getElementById('cfgHttpThreadPoolSize').value);
+if(!Number.isInteger(httpThreadPoolSize)||httpThreadPoolSize<1||httpThreadPoolSize>1024){showSnackbar('HTTP 工作线程数必须是 1～1024 的整数');return false}
+config.configUi=Object.assign({},config.configUi,{enabled:document.getElementById('cfgEnabled').checked,port:parseInt(document.getElementById('cfgPort').value)||currentPort(),httpThreadPoolSize:httpThreadPoolSize});
 delete config.autoNewSession;
 delete config.globalProxyEnabled;
 try{var r=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});

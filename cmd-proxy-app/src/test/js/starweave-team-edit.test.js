@@ -87,6 +87,40 @@ test('non READY member prevents opening edit and gives a reason on the disabled 
     assert.match(messages[0], /READY/)
 })
 
+test('batch additions keep distinct member IDs without crypto, even with identical time and random values', async () => {
+    const {context, team} = fixture()
+    // Exercise the real HTTP fallback and force repeated request IDs to verify deduplication.
+    context.Date = {now: () => 1793183446012}
+    context.Math = {random: () => 0.5}
+    vm.runInContext(section('function starRequestId()',
+        'function starSessionSelectionKey()'), context)
+    const base = 'member-' + context.starRequestId()
+    team.members[0].teamMemberId = base
+    const sources = [2, 3].map(i => ({sourceGroupId: 'group-' + i,
+        sourceRobotId: 'robot-' + i}))
+    const selected = {[base]: true}
+    sources.forEach(source => { selected[context.starTeamSourceKey(source)] = true })
+    context.starTeamEditDraft = {teamId: 'team-1', version: 1,
+        members: team.members, sources, selected, remarks: {},
+        captainId: '', newIds: Object.create(null)}
+    let submitted
+    context.api = async (url, options) => {
+        submitted = JSON.parse(options.body)
+        return {ok: true, json: async () => ({accepted: true,
+            data: {accepted: true, data: {sessionFailures: {}}}})}
+    }
+    await context.saveStarweaveTeamEdit()
+    const firstIds = submitted.members.map(member => member.teamMemberId)
+    assert.equal(firstIds.length, 3)
+    assert.equal(new Set(firstIds).size, 3)
+    assert.equal(firstIds[0], base)
+    assert.ok(firstIds.every(id => /^[A-Za-z0-9_-]+$/.test(id)))
+    assert.deepEqual(submitted.members.map(member => member.sourceGroupId),
+        ['group-1', 'group-2', 'group-3'])
+    await context.saveStarweaveTeamEdit()
+    assert.deepEqual(submitted.members.map(member => member.teamMemberId), firstIds)
+})
+
 test('confirmed update closes edit immediately and shows progress until the request settles', async () => {
     const {context, boxes, messages, dialogs} = fixture()
     context.starTeamEditDraft = {teamId: 'team-1', version: 1, coordinated: false,

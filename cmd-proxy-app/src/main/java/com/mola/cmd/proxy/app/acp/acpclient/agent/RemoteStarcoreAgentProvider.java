@@ -15,7 +15,7 @@ public final class RemoteStarcoreAgentProvider extends EmbeddedPiAgentProvider {
     public String getCommand() { return "remote-starcore"; }
     public String[] getArgs() { return new String[0]; }
     public boolean closeInputAfterSessionClose() { return true; }
-    public List<Path> getMcpConfigPaths(String workspace, AcpRobotParam robot) { return Collections.singletonList(CmdProxyHome.resolve("mcp.json")); }
-    public List<Path> getSkillPaths(String workspace, AcpRobotParam robot) { return Collections.singletonList(com.mola.cmd.proxy.app.acp.remote.RemoteResources.skillRoot(robot)); }
-    public AcpTransport openTransport(AcpRobotParam robot, Map<String, String> environment) throws IOException { return RemoteAcpManager.getInstance().open(robot); }
+    public List<Path> getMcpConfigPaths(String workspace, AcpRobotParam robot) { return "BROWSER".equals(robot.getRemotePlatform()) ? super.getMcpConfigPaths(workspace, robot) : Collections.singletonList(CmdProxyHome.resolve("mcp.json")); }
+    public List<Path> getSkillPaths(String workspace, AcpRobotParam robot) { return "BROWSER".equals(robot.getRemotePlatform()) ? super.getSkillPaths(workspace, robot) : Collections.singletonList(com.mola.cmd.proxy.app.acp.remote.RemoteResources.skillRoot(robot)); }
+    public AcpTransport openTransport(AcpRobotParam robot, Map<String, String> environment) throws IOException { return RemoteAcpManager.getInstance().open(robot, environment); }
 }
