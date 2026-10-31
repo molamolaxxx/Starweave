@@ -152,6 +152,9 @@ OpenAI 兼容服务；模型需支持流式 Chat Completions 和工具调用。�
 原 Node Pi 当前支持 **Linux x64 / Windows x64 / macOS x64 与 ARM64（Apple Silicon）**，运行时需要系统 **Node.js 22.19.0+**；
 无需单独安装 Pi 或 npm 依赖。它同样接入团队、记忆、调度、观测和外部信道。
 
+**浏览器里也能运行星核。** Chrome / Edge 插件在浏览器扩展中运行 Agent，提供标签页、页面、鼠标键盘、文件上传等 17 类浏览器工具；宿主文件、Shell 和 MCP 调用交给 Starweave 代理执行。
+安装、配置与工具说明见 [浏览器星核插件使用文档](browser-agent/README.md)。
+
 **新建即配好协作节奏：**
 
 | 设置 | 新建智能体默认值 |
@@ -730,6 +733,7 @@ cmd-proxy/
   - [会话查询 MCP](docs/acp-session-query-mcp.md) · [观测台](docs/observation-console.md)
 - **引擎与远程环境**
   - [星核 Java 引擎](docs/java-pi-engine.md) · [原 Node Pi 引擎](docs/embedded-pi-engine.md)
+  - [浏览器星核插件](browser-agent/README.md)
   - [远程星核 SDK、JVM 工具与资源同步](docs/remote-starcore-sdk.md)
   - [注册中心](docs/registry-center.md) · [混合队伍协调](docs/registry-mixed-team-refactor.md) · [实时事件链路](docs/registry-team-realtime.md)
 - **外部世界**
